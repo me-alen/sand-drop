@@ -1,0 +1,39 @@
+// Variables
+$primary-color: #007bff;
+$secondary-color: #6c757d;
+
+// Mixins
+@mixin flex-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+// Base styles
+body {
+  margin: 0;
+  padding: 0;
+  font-family: Arial, sans-serif;
+}
+
+// Example component styling
+.button {
+  padding: 10px 20px;
+  background-color: $primary-color;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  
+  &:hover {
+    background-color: darken($primary-color, 10%);
+  }
+  
+  &--secondary {
+    background-color: $secondary-color;
+    
+    &:hover {
+      background-color: darken($secondary-color, 10%);
+    }
+  }
+} 
