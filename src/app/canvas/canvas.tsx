@@ -1,14 +1,14 @@
-import React, { useRef, useState } from 'react';
+import React from 'react';
 
 const Canvas = (): JSX.Element => {
-    const gridRef = useRef<HTMLDivElement>(null);
-    const [isMouseDown, setIsMouseDown] = useState(false);
+    const gridRef = React.useRef<HTMLDivElement>(null);
+    const [isMouseDown, setIsMouseDown] = React.useState(false);
     const SQUARE_SIZE = 5;
     const GRID_HEIGHT = Math.floor(window.innerHeight / SQUARE_SIZE);
     const GRID_WIDTH = Math.floor(window.innerWidth / SQUARE_SIZE);
 
     // Track occupied positions
-    const occupiedPositions = useRef<boolean[][]>(
+    const occupiedPositions = React.useRef<boolean[][]>(
         Array(GRID_HEIGHT).fill(null).map(() => Array(GRID_WIDTH).fill(false))
     );
 
