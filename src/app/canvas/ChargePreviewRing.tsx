@@ -1,6 +1,6 @@
 import React from 'react';
 
-import type { ChargePreview } from './types.ts';
+import type { ChargePreview } from './types';
 
 type ChargePreviewRingProps = {
     chargePreview: ChargePreview;

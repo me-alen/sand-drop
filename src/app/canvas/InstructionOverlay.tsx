@@ -45,7 +45,7 @@ const InstructionOverlay = (): React.JSX.Element => {
                 }}
             >
                 <span style={{ ...keycapStyle, marginRight: '0.35rem' }}>↑</span>
-                <span>- grain size -</span>
+                <span>- grains per drop -</span>
                 <span style={keycapStyle}>↓</span>
             </div>
             <div style={{ marginTop: '0.25rem', fontSize: '0.9rem', fontWeight: 400, opacity: 0.2 }}>

@@ -1,9 +1,9 @@
 import React from 'react';
 
-import ChargePreviewRing from './ChargePreviewRing.tsx';
-import InstructionOverlay from './InstructionOverlay.tsx';
-import ModeToggle from './ModeToggle.tsx';
-import { buildRandomSandCastle } from './castle.ts';
+import ChargePreviewRing from './ChargePreviewRing';
+import InstructionOverlay from './InstructionOverlay';
+import ModeToggle from './ModeToggle';
+import { buildRandomSandCastle } from './castle';
 import {
     DROP_SAND_HUE_STEP,
     DROP_SAND_LIGHTNESS,
@@ -21,8 +21,16 @@ import {
     PURE_SAND_SATURATION,
     SPAWN_INTERVAL_MS,
     SQUARE_SIZE
-} from './constants.ts';
-import type { ChargePreview, ChargeStart, GrainRecord } from './types.ts';
+} from './constants';
+import type { ChargePreview, ChargeStart, GrainRecord } from './types';
+
+const DROP_FALL_DURATION_MS = 800;
+const SLIDE_DURATION_MS = 220;
+
+const createOccupancyGrid = (height: number, width: number): boolean[][] =>
+    Array.from({ length: height }, () => Array<boolean>(width).fill(false));
+
+const getCellKey = (gridX: number, gridY: number): string => `${gridX},${gridY}`;
 
 const Canvas = (): React.JSX.Element => {
     const gridRef = React.useRef<HTMLDivElement>(null);
@@ -37,45 +45,44 @@ const Canvas = (): React.JSX.Element => {
     const chargeStartRef = React.useRef<ChargeStart | null>(null);
     const chargeAnimationFrameRef = React.useRef<number | null>(null);
     const hasSeededInitialSandRef = React.useRef(false);
-    const hasBuiltInitialCastleRef = React.useRef(false);
     const globalSettleTimeoutRef = React.useRef<number | null>(null);
     const activeGrainsRef = React.useRef<GrainRecord[]>([]);
     const grainsByCellRef = React.useRef<Map<string, GrainRecord>>(new Map());
+    const pendingTimeoutsRef = React.useRef<Set<number>>(new Set());
+    const disposedRef = React.useRef(false);
+    const triggerCascadeSettleRef = React.useRef<(minGridX: number, maxGridX: number) => void>();
 
-    const GRID_HEIGHT = Math.floor(window.innerHeight / SQUARE_SIZE);
-    const GRID_WIDTH = Math.floor(window.innerWidth / SQUARE_SIZE);
-
+    const gridWidthRef = React.useRef(Math.max(1, Math.floor(window.innerWidth / SQUARE_SIZE)));
+    const gridHeightRef = React.useRef(Math.max(1, Math.floor(window.innerHeight / SQUARE_SIZE)));
     const occupiedPositions = React.useRef<boolean[][]>(
-        Array(GRID_HEIGHT).fill(null).map(() => Array(GRID_WIDTH).fill(false))
+        createOccupancyGrid(gridHeightRef.current, gridWidthRef.current)
     );
 
-    const getCellKey = (gridX: number, gridY: number): string => `${gridX},${gridY}`;
+    const scheduleTimeout = React.useCallback((callback: () => void, delayMs: number): number => {
+        const timeoutId = window.setTimeout(() => {
+            pendingTimeoutsRef.current.delete(timeoutId);
+            callback();
+        }, delayMs);
+        pendingTimeoutsRef.current.add(timeoutId);
+        return timeoutId;
+    }, []);
+
+    const clearScheduledTimeout = React.useCallback((timeoutId: number) => {
+        window.clearTimeout(timeoutId);
+        pendingTimeoutsRef.current.delete(timeoutId);
+    }, []);
 
     const getPureSandColor = React.useCallback((): string => {
         const shadeJitter = Math.floor(Math.random() * 10) - 5;
         return `hsl(${INITIAL_SAND_BASE_HUE + shadeJitter}, ${PURE_SAND_SATURATION}%, ${PURE_SAND_LIGHTNESS}%)`;
     }, []);
 
-    const addGrainRecord = React.useCallback((grainRecord: GrainRecord) => {
-        occupiedPositions.current[grainRecord.gridY][grainRecord.gridX] = true;
-        activeGrainsRef.current.push(grainRecord);
-        grainsByCellRef.current.set(getCellKey(grainRecord.gridX, grainRecord.gridY), grainRecord);
-
-        if (activeGrainsRef.current.length > MAX_TOTAL_GRAINS) {
-            const removedGrain = activeGrainsRef.current.shift();
-            if (!removedGrain) return;
-            occupiedPositions.current[removedGrain.gridY][removedGrain.gridX] = false;
-            grainsByCellRef.current.delete(getCellKey(removedGrain.gridX, removedGrain.gridY));
-            removedGrain.element.remove();
-        }
-    }, []);
-
-    const addStaticGrain = React.useCallback((gridX: number, gridY: number, color: string): boolean => {
-        const grid = gridRef.current;
-        if (!grid) return false;
-        if (gridX < 0 || gridX >= GRID_WIDTH || gridY < 0 || gridY >= GRID_HEIGHT) return false;
-        if (occupiedPositions.current[gridY][gridX]) return false;
-
+    const createGrainElement = React.useCallback((
+        gridX: number,
+        gridY: number,
+        color: string,
+        transition: string
+    ): HTMLDivElement => {
         const grain = document.createElement('div');
         grain.style.position = 'absolute';
         grain.style.left = `${gridX * SQUARE_SIZE}px`;
@@ -83,12 +90,41 @@ const Canvas = (): React.JSX.Element => {
         grain.style.width = `${SQUARE_SIZE}px`;
         grain.style.height = `${SQUARE_SIZE}px`;
         grain.style.backgroundColor = color;
-        grain.style.transition = 'none';
-        grid.appendChild(grain);
+        grain.style.transition = transition;
+        return grain;
+    }, []);
 
-        addGrainRecord({ element: grain, gridX, gridY });
+    const addGrainRecord = React.useCallback((grainRecord: GrainRecord) => {
+        occupiedPositions.current[grainRecord.gridY][grainRecord.gridX] = true;
+        activeGrainsRef.current.push(grainRecord);
+        grainsByCellRef.current.set(getCellKey(grainRecord.gridX, grainRecord.gridY), grainRecord);
+
+        while (activeGrainsRef.current.length > MAX_TOTAL_GRAINS) {
+            const removedGrain = activeGrainsRef.current.shift();
+            if (!removedGrain) break;
+            removedGrain.removed = true;
+            const removedKey = getCellKey(removedGrain.gridX, removedGrain.gridY);
+            // A grain mid-flight from an explosion has stale coordinates and owns
+            // no cell, so only release the cell if this grain still holds it.
+            if (grainsByCellRef.current.get(removedKey) === removedGrain) {
+                grainsByCellRef.current.delete(removedKey);
+                occupiedPositions.current[removedGrain.gridY][removedGrain.gridX] = false;
+            }
+            removedGrain.element.remove();
+        }
+    }, []);
+
+    const addStaticGrain = React.useCallback((gridX: number, gridY: number, color: string): boolean => {
+        const grid = gridRef.current;
+        if (!grid) return false;
+        if (gridX < 0 || gridX >= gridWidthRef.current || gridY < 0 || gridY >= gridHeightRef.current) return false;
+        if (occupiedPositions.current[gridY][gridX]) return false;
+
+        const grain = createGrainElement(gridX, gridY, color, 'none');
+        grid.appendChild(grain);
+        addGrainRecord({ element: grain, gridX, gridY, settled: true, removed: false });
         return true;
-    }, [GRID_HEIGHT, GRID_WIDTH, addGrainRecord]);
+    }, [addGrainRecord, createGrainElement]);
 
     const getExplosionRadiusForHold = React.useCallback((heldMs: number): number => {
         const normalized = Math.max(0, Math.min(heldMs / EXPLOSION_FULL_CHARGE_MS, 1));
@@ -100,37 +136,38 @@ const Canvas = (): React.JSX.Element => {
 
     const buildCastle = React.useCallback(() => {
         buildRandomSandCastle({
-            gridWidth: GRID_WIDTH,
-            gridHeight: GRID_HEIGHT,
+            gridWidth: gridWidthRef.current,
+            gridHeight: gridHeightRef.current,
             occupiedPositions: occupiedPositions.current,
             addStaticGrain,
             getPureSandColor
         });
-    }, [GRID_HEIGHT, GRID_WIDTH, addStaticGrain, getPureSandColor]);
+    }, [addStaticGrain, getPureSandColor]);
 
     const getClampedGridPosition = React.useCallback((x: number, y: number) => {
-        const clampedX = Math.max(0, Math.min(x, (GRID_WIDTH - 1) * SQUARE_SIZE));
-        const clampedY = Math.max(0, Math.min(y, (GRID_HEIGHT - 1) * SQUARE_SIZE));
+        const clampedX = Math.max(0, Math.min(x, (gridWidthRef.current - 1) * SQUARE_SIZE));
+        const clampedY = Math.max(0, Math.min(y, (gridHeightRef.current - 1) * SQUARE_SIZE));
         return {
             clampedX,
             clampedY,
             gridX: Math.floor(clampedX / SQUARE_SIZE),
             gridY: Math.floor(clampedY / SQUARE_SIZE)
         };
-    }, [GRID_HEIGHT, GRID_WIDTH]);
+    }, []);
 
     const findRestingPosition = React.useCallback((startX: number, startY: number): [number, number, number] => {
         const { clampedX, clampedY } = getClampedGridPosition(startX, startY);
+        const gridWidth = gridWidthRef.current;
+        const gridHeight = gridHeightRef.current;
         let gridX = Math.floor(clampedX / SQUARE_SIZE);
         let gridY = Math.floor(clampedY / SQUARE_SIZE);
-        const startGridX = gridX;
 
-        while (gridY < GRID_HEIGHT - 1 && !occupiedPositions.current[gridY + 1][startGridX]) {
+        while (gridY < gridHeight - 1 && !occupiedPositions.current[gridY + 1][gridX]) {
             gridY++;
         }
         const verticalStopY = gridY;
 
-        while (gridY < GRID_HEIGHT - 1) {
+        while (gridY < gridHeight - 1) {
             const belowOccupied = occupiedPositions.current[gridY + 1][gridX];
             if (!belowOccupied) {
                 gridY++;
@@ -138,7 +175,7 @@ const Canvas = (): React.JSX.Element => {
             }
 
             const leftEmpty = gridX > 0 && !occupiedPositions.current[gridY + 1][gridX - 1];
-            const rightEmpty = gridX < GRID_WIDTH - 1 && !occupiedPositions.current[gridY + 1][gridX + 1];
+            const rightEmpty = gridX < gridWidth - 1 && !occupiedPositions.current[gridY + 1][gridX + 1];
 
             if (leftEmpty && rightEmpty) {
                 gridX += Math.random() < 0.5 ? -1 : 1;
@@ -155,62 +192,86 @@ const Canvas = (): React.JSX.Element => {
         }
 
         return [verticalStopY * SQUARE_SIZE, gridX * SQUARE_SIZE, gridY * SQUARE_SIZE];
-    }, [GRID_HEIGHT, GRID_WIDTH, getClampedGridPosition]);
+    }, [getClampedGridPosition]);
+
+    const settleExplodedGrain = React.useCallback((
+        grain: GrainRecord,
+        startX: number,
+        startY: number,
+        incomingVelocityY = 0
+    ) => {
+        if (grain.removed) return;
+        const { clampedX, clampedY } = getClampedGridPosition(startX, startY);
+        const [restingVerticalY, restingX, restingY] = findRestingPosition(clampedX, clampedY);
+        const finalGridX = Math.floor(restingX / SQUARE_SIZE);
+        let finalGridY = Math.floor(restingY / SQUARE_SIZE);
+
+        // Another grain can claim the same resting cell before this one lands;
+        // walk up the column to the first free cell instead of stacking grains.
+        while (finalGridY > 0 && occupiedPositions.current[finalGridY][finalGridX]) {
+            finalGridY--;
+        }
+
+        const finalX = finalGridX * SQUARE_SIZE;
+        const finalY = finalGridY * SQUARE_SIZE;
+        const verticalY = Math.min(restingVerticalY, finalY);
+        const startGridX = Math.floor(clampedX / SQUARE_SIZE);
+        const startGridY = Math.floor(clampedY / SQUARE_SIZE);
+        const startSnapX = startGridX * SQUARE_SIZE;
+        const startSnapY = startGridY * SQUARE_SIZE;
+        const needsSlidePhase = finalX !== startSnapX || finalY !== verticalY;
+        const verticalDistance = Math.max(0, verticalY - startSnapY);
+        const baseFallSpeedPxPerMs = 0.35;
+        const effectiveFallSpeedPxPerMs = Math.max(baseFallSpeedPxPerMs, incomingVelocityY);
+        const verticalDurationMs = Math.min(650, Math.max(140, verticalDistance / effectiveFallSpeedPxPerMs));
+
+        occupiedPositions.current[finalGridY][finalGridX] = true;
+        grainsByCellRef.current.set(getCellKey(finalGridX, finalGridY), grain);
+        grain.gridX = finalGridX;
+        grain.gridY = finalGridY;
+
+        grain.element.style.transform = 'none';
+        grain.element.style.opacity = '1';
+        grain.element.style.left = `${startSnapX}px`;
+        grain.element.style.top = `${startSnapY}px`;
+        grain.element.style.transition = `top ${verticalDurationMs}ms linear`;
+
+        requestAnimationFrame(() => {
+            if (disposedRef.current || grain.removed) return;
+            grain.element.style.top = `${verticalY}px`;
+            if (!needsSlidePhase) return;
+            scheduleTimeout(() => {
+                if (grain.removed) return;
+                grain.element.style.transition = 'left 0.2s linear, top 0.2s linear';
+                grain.element.style.left = `${finalX}px`;
+                grain.element.style.top = `${finalY}px`;
+            }, verticalDurationMs);
+        });
+
+        const totalSettleTime = verticalDurationMs + (needsSlidePhase ? SLIDE_DURATION_MS : 0);
+        scheduleTimeout(() => {
+            if (grainsByCellRef.current.get(getCellKey(grain.gridX, grain.gridY)) === grain) {
+                grain.settled = true;
+            }
+        }, totalSettleTime);
+
+        if (globalSettleTimeoutRef.current !== null) {
+            clearScheduledTimeout(globalSettleTimeoutRef.current);
+        }
+        globalSettleTimeoutRef.current = scheduleTimeout(() => {
+            globalSettleTimeoutRef.current = null;
+            triggerCascadeSettleRef.current?.(0, gridWidthRef.current - 1);
+        }, totalSettleTime);
+    }, [clearScheduledTimeout, findRestingPosition, getClampedGridPosition, scheduleTimeout]);
 
     const triggerCascadeSettle = React.useCallback((minGridX: number, maxGridX: number) => {
-        const settleExplodedGrain = (grain: GrainRecord, startX: number, startY: number, incomingVelocityY = 0) => {
-            const { clampedX, clampedY } = getClampedGridPosition(startX, startY);
-            const [verticalY, finalX, finalY] = findRestingPosition(clampedX, clampedY);
-            const finalGridX = Math.floor(finalX / SQUARE_SIZE);
-            const finalGridY = Math.floor(finalY / SQUARE_SIZE);
-            const startGridX = Math.floor(clampedX / SQUARE_SIZE);
-            const startGridY = Math.floor(clampedY / SQUARE_SIZE);
-            const startSnapX = startGridX * SQUARE_SIZE;
-            const startSnapY = startGridY * SQUARE_SIZE;
-            const needsSlidePhase = finalX !== startSnapX || finalY !== verticalY;
-            const verticalDistance = Math.max(0, verticalY - startSnapY);
-            const baseFallSpeedPxPerMs = 0.35;
-            const effectiveFallSpeedPxPerMs = Math.max(baseFallSpeedPxPerMs, incomingVelocityY);
-            const verticalDurationMs = Math.min(650, Math.max(140, verticalDistance / effectiveFallSpeedPxPerMs));
-
-            occupiedPositions.current[finalGridY][finalGridX] = true;
-            grainsByCellRef.current.set(getCellKey(finalGridX, finalGridY), grain);
-            grain.gridX = finalGridX;
-            grain.gridY = finalGridY;
-
-            grain.element.style.transform = 'none';
-            grain.element.style.opacity = '1';
-            grain.element.style.left = `${startSnapX}px`;
-            grain.element.style.top = `${startSnapY}px`;
-            grain.element.style.transition = `top ${verticalDurationMs}ms linear`;
-
-            requestAnimationFrame(() => {
-                grain.element.style.top = `${verticalY}px`;
-                if (!needsSlidePhase) return;
-                window.setTimeout(() => {
-                    grain.element.style.transition = 'left 0.2s linear, top 0.2s linear';
-                    grain.element.style.left = `${finalX}px`;
-                    grain.element.style.top = `${finalY}px`;
-                }, verticalDurationMs);
-            });
-
-            const totalSettleTime = verticalDurationMs + (needsSlidePhase ? 220 : 0);
-            if (globalSettleTimeoutRef.current !== null) {
-                window.clearTimeout(globalSettleTimeoutRef.current);
-            }
-            globalSettleTimeoutRef.current = window.setTimeout(() => {
-                globalSettleTimeoutRef.current = null;
-                triggerCascadeSettle(0, GRID_WIDTH - 1);
-            }, totalSettleTime);
-        };
-
         const settleUnsupportedGrainsInColumns = (startColumn: number, endColumn: number): number => {
             const startX = Math.max(0, startColumn);
-            const endX = Math.min(GRID_WIDTH - 1, endColumn);
+            const endX = Math.min(gridWidthRef.current - 1, endColumn);
             let movedCount = 0;
 
             for (let gridX = startX; gridX <= endX; gridX++) {
-                for (let gridY = GRID_HEIGHT - 2; gridY >= 0; gridY--) {
+                for (let gridY = gridHeightRef.current - 2; gridY >= 0; gridY--) {
                     if (!occupiedPositions.current[gridY][gridX]) continue;
                     if (occupiedPositions.current[gridY + 1][gridX]) continue;
 
@@ -219,7 +280,8 @@ const Canvas = (): React.JSX.Element => {
 
                     occupiedPositions.current[gridY][gridX] = false;
                     grainsByCellRef.current.delete(getCellKey(gridX, gridY));
-                    settleExplodedGrain(grain, gridX * SQUARE_SIZE, gridY * SQUARE_SIZE, 0);
+                    grain.settled = false;
+                    settleExplodedGrain(grain, gridX * SQUARE_SIZE, gridY * SQUARE_SIZE);
                     movedCount++;
                 }
             }
@@ -235,21 +297,25 @@ const Canvas = (): React.JSX.Element => {
             pass++;
             const moved = settleUnsupportedGrainsInColumns(minGridX, maxGridX);
             if (moved > 0 && pass < maxPasses) {
-                window.setTimeout(runPass, passIntervalMs);
+                scheduleTimeout(runPass, passIntervalMs);
             }
         };
 
         runPass();
-    }, [GRID_HEIGHT, GRID_WIDTH, findRestingPosition, getClampedGridPosition]);
+    }, [scheduleTimeout, settleExplodedGrain]);
+
+    React.useEffect(() => {
+        triggerCascadeSettleRef.current = triggerCascadeSettle;
+    }, [triggerCascadeSettle]);
 
     const scheduleStabilitySweeps = React.useCallback((initialDelayMs = 0) => {
         const sweepDelays = [0, 220, 480, 850, 1300];
         for (const delay of sweepDelays) {
-            window.setTimeout(() => {
-                triggerCascadeSettle(0, GRID_WIDTH - 1);
+            scheduleTimeout(() => {
+                triggerCascadeSettle(0, gridWidthRef.current - 1);
             }, initialDelayMs + delay);
         }
-    }, [GRID_WIDTH, triggerCascadeSettle]);
+    }, [scheduleTimeout, triggerCascadeSettle]);
 
     const animateParabolicExplosion = React.useCallback((
         grain: GrainRecord,
@@ -265,6 +331,7 @@ const Canvas = (): React.JSX.Element => {
         grain.element.style.willChange = 'left, top';
 
         const step = (now: number) => {
+            if (disposedRef.current || grain.removed) return;
             const elapsed = now - startTime;
             const progress = Math.min(elapsed / EXPLOSION_DURATION_MS, 1);
 
@@ -288,12 +355,14 @@ const Canvas = (): React.JSX.Element => {
     }, []);
 
     const explodeAt = React.useCallback((gridX: number, gridY: number, radiusCells = EXPLOSION_RADIUS_CELLS) => {
+        const gridWidth = gridWidthRef.current;
+        const gridHeight = gridHeightRef.current;
         const grainsToExplode: GrainRecord[] = [];
 
         for (let y = gridY - radiusCells; y <= gridY + radiusCells; y++) {
-            if (y < 0 || y >= GRID_HEIGHT) continue;
+            if (y < 0 || y >= gridHeight) continue;
             for (let x = gridX - radiusCells; x <= gridX + radiusCells; x++) {
-                if (x < 0 || x >= GRID_WIDTH) continue;
+                if (x < 0 || x >= gridWidth) continue;
                 const distance = Math.hypot(x - gridX, y - gridY);
                 if (distance > radiusCells) continue;
                 const grain = grainsByCellRef.current.get(getCellKey(x, y));
@@ -303,47 +372,8 @@ const Canvas = (): React.JSX.Element => {
 
         if (grainsToExplode.length === 0) return;
 
-        const settleExplodedGrain = (grain: GrainRecord, startX: number, startY: number, incomingVelocityY = 0) => {
-            const { clampedX, clampedY } = getClampedGridPosition(startX, startY);
-            const [verticalY, finalX, finalY] = findRestingPosition(clampedX, clampedY);
-            const finalGridX = Math.floor(finalX / SQUARE_SIZE);
-            const finalGridY = Math.floor(finalY / SQUARE_SIZE);
-            const startGridX = Math.floor(clampedX / SQUARE_SIZE);
-            const startGridY = Math.floor(clampedY / SQUARE_SIZE);
-            const startSnapX = startGridX * SQUARE_SIZE;
-            const startSnapY = startGridY * SQUARE_SIZE;
-            const needsSlidePhase = finalX !== startSnapX || finalY !== verticalY;
-            const verticalDistance = Math.max(0, verticalY - startSnapY);
-            const baseFallSpeedPxPerMs = 0.35;
-            const effectiveFallSpeedPxPerMs = Math.max(baseFallSpeedPxPerMs, incomingVelocityY);
-            const verticalDurationMs = Math.min(650, Math.max(140, verticalDistance / effectiveFallSpeedPxPerMs));
-
-            occupiedPositions.current[finalGridY][finalGridX] = true;
-            grainsByCellRef.current.set(getCellKey(finalGridX, finalGridY), grain);
-            grain.gridX = finalGridX;
-            grain.gridY = finalGridY;
-
-            grain.element.style.transform = 'none';
-            grain.element.style.opacity = '1';
-            grain.element.style.left = `${startSnapX}px`;
-            grain.element.style.top = `${startSnapY}px`;
-            grain.element.style.transition = `top ${verticalDurationMs}ms linear`;
-
-            requestAnimationFrame(() => {
-                grain.element.style.top = `${verticalY}px`;
-                if (!needsSlidePhase) return;
-                window.setTimeout(() => {
-                    grain.element.style.transition = 'left 0.2s linear, top 0.2s linear';
-                    grain.element.style.left = `${finalX}px`;
-                    grain.element.style.top = `${finalY}px`;
-                }, verticalDurationMs);
-            });
-
-            const totalSettleTime = verticalDurationMs + (needsSlidePhase ? 220 : 0);
-            scheduleStabilitySweeps(totalSettleTime);
-        };
-
         for (const grain of grainsToExplode) {
+            grain.settled = false;
             occupiedPositions.current[grain.gridY][grain.gridX] = false;
             grainsByCellRef.current.delete(getCellKey(grain.gridX, grain.gridY));
         }
@@ -357,8 +387,8 @@ const Canvas = (): React.JSX.Element => {
                 const blastRadius = 2 + Math.random() * (radiusCells + 4);
                 const candidateX = Math.round(gridX + Math.cos(angle) * blastRadius);
                 const candidateY = Math.round(gridY + Math.sin(angle) * blastRadius - 1);
-                const clampedX = Math.max(0, Math.min(candidateX, GRID_WIDTH - 1));
-                const clampedY = Math.max(0, Math.min(candidateY, GRID_HEIGHT - 1));
+                const clampedX = Math.max(0, Math.min(candidateX, gridWidth - 1));
+                const clampedY = Math.max(0, Math.min(candidateY, gridHeight - 1));
                 if (!occupiedPositions.current[clampedY][clampedX]) {
                     targetGridX = clampedX;
                     targetGridY = clampedY;
@@ -374,15 +404,15 @@ const Canvas = (): React.JSX.Element => {
             grain.element.style.opacity = '1';
 
             animateParabolicExplosion(grain, startX, startY, targetX, targetY, (endVelocityY) => {
-                settleExplodedGrain(grain, targetGridX * SQUARE_SIZE, targetGridY * SQUARE_SIZE, endVelocityY);
+                settleExplodedGrain(grain, targetX, targetY, endVelocityY);
             });
         }
 
-        window.setTimeout(() => {
+        scheduleTimeout(() => {
             triggerCascadeSettle(gridX - radiusCells, gridX + radiusCells);
             scheduleStabilitySweeps();
         }, EXPLOSION_DURATION_MS);
-    }, [GRID_HEIGHT, GRID_WIDTH, animateParabolicExplosion, findRestingPosition, getClampedGridPosition, scheduleStabilitySweeps, triggerCascadeSettle]);
+    }, [animateParabolicExplosion, scheduleStabilitySweeps, scheduleTimeout, settleExplodedGrain, triggerCascadeSettle]);
 
     const createSandGrain = React.useCallback((x: number, y: number) => {
         const grid = gridRef.current;
@@ -391,18 +421,15 @@ const Canvas = (): React.JSX.Element => {
 
         if (occupiedPositions.current[startGridY][startGridX]) return;
 
-        const sandGrain = document.createElement('div');
-        sandGrain.style.position = 'absolute';
-        sandGrain.style.left = `${startGridX * SQUARE_SIZE}px`;
-        sandGrain.style.top = `${startGridY * SQUARE_SIZE}px`;
-        sandGrain.style.width = `${SQUARE_SIZE}px`;
-        sandGrain.style.height = `${SQUARE_SIZE}px`;
-
         const dropHue = useColoredDrops ? hueRef.current : INITIAL_SAND_BASE_HUE + (Math.random() * 10 - 5);
         const dropSaturation = useColoredDrops ? DROP_SAND_SATURATION : PURE_SAND_SATURATION;
         const dropLightness = useColoredDrops ? DROP_SAND_LIGHTNESS : PURE_SAND_LIGHTNESS;
-        sandGrain.style.backgroundColor = `hsl(${dropHue}, ${dropSaturation}%, ${dropLightness}%)`;
-        sandGrain.style.transition = 'top 0.8s linear';
+        const sandGrain = createGrainElement(
+            startGridX,
+            startGridY,
+            `hsl(${dropHue}, ${dropSaturation}%, ${dropLightness}%)`,
+            `top ${DROP_FALL_DURATION_MS}ms linear`
+        );
         grid.appendChild(sandGrain);
 
         if (useColoredDrops) {
@@ -415,18 +442,33 @@ const Canvas = (): React.JSX.Element => {
         const startX = startGridX * SQUARE_SIZE;
         const needsSlidePhase = finalX !== startX || finalY !== verticalY;
 
-        addGrainRecord({ element: sandGrain, gridX: finalGridX, gridY: finalGridY });
+        const grainRecord: GrainRecord = {
+            element: sandGrain,
+            gridX: finalGridX,
+            gridY: finalGridY,
+            settled: false,
+            removed: false
+        };
+        addGrainRecord(grainRecord);
 
         requestAnimationFrame(() => {
+            if (disposedRef.current || grainRecord.removed) return;
             sandGrain.style.top = `${verticalY}px`;
             if (!needsSlidePhase) return;
-            window.setTimeout(() => {
+            scheduleTimeout(() => {
+                if (grainRecord.removed) return;
                 sandGrain.style.transition = 'left 0.2s linear, top 0.2s linear';
                 sandGrain.style.left = `${finalX}px`;
                 sandGrain.style.top = `${finalY}px`;
-            }, 800);
+            }, DROP_FALL_DURATION_MS);
         });
-    }, [addGrainRecord, findRestingPosition, getClampedGridPosition, useColoredDrops]);
+
+        scheduleTimeout(() => {
+            if (grainsByCellRef.current.get(getCellKey(grainRecord.gridX, grainRecord.gridY)) === grainRecord) {
+                grainRecord.settled = true;
+            }
+        }, DROP_FALL_DURATION_MS + (needsSlidePhase ? SLIDE_DURATION_MS : 0));
+    }, [addGrainRecord, createGrainElement, findRestingPosition, getClampedGridPosition, scheduleTimeout, useColoredDrops]);
 
     const createSandBurst = React.useCallback((x: number, y: number) => {
         for (let i = 0; i < grainsPerDrop; i++) {
@@ -445,43 +487,28 @@ const Canvas = (): React.JSX.Element => {
 
     React.useEffect(() => {
         if (hasSeededInitialSandRef.current) return;
-        const grid = gridRef.current;
-        if (!grid) return;
-
+        if (!gridRef.current) return;
         hasSeededInitialSandRef.current = true;
-        const baseHeight = Math.max(1, Math.round(GRID_HEIGHT * INITIAL_SAND_HEIGHT_RATIO));
+
+        const gridWidth = gridWidthRef.current;
+        const gridHeight = gridHeightRef.current;
+        const baseHeight = Math.max(1, Math.round(gridHeight * INITIAL_SAND_HEIGHT_RATIO));
         const variation = Math.max(1, Math.round(baseHeight * 0.45));
         const minHeight = Math.max(1, baseHeight - variation);
-        const maxHeight = Math.min(GRID_HEIGHT - 1, baseHeight + variation);
+        const maxHeight = Math.min(gridHeight - 1, baseHeight + variation);
         let currentHeight = Math.round(baseHeight + (Math.random() * 2 - 1) * variation);
 
-        for (let gridX = 0; gridX < GRID_WIDTH; gridX++) {
+        for (let gridX = 0; gridX < gridWidth; gridX++) {
             currentHeight += Math.floor(Math.random() * 3) - 1;
             currentHeight = Math.max(minHeight, Math.min(maxHeight, currentHeight));
 
             for (let depth = 0; depth < currentHeight; depth++) {
-                const gridY = GRID_HEIGHT - 1 - depth;
-                if (occupiedPositions.current[gridY][gridX]) continue;
-
-                const seedGrain = document.createElement('div');
-                seedGrain.style.position = 'absolute';
-                seedGrain.style.left = `${gridX * SQUARE_SIZE}px`;
-                seedGrain.style.top = `${gridY * SQUARE_SIZE}px`;
-                seedGrain.style.width = `${SQUARE_SIZE}px`;
-                seedGrain.style.height = `${SQUARE_SIZE}px`;
-                seedGrain.style.backgroundColor = getPureSandColor();
-                seedGrain.style.transition = 'none';
-                grid.appendChild(seedGrain);
-
-                addGrainRecord({ element: seedGrain, gridX, gridY });
+                addStaticGrain(gridX, gridHeight - 1 - depth, getPureSandColor());
             }
         }
 
-        if (!hasBuiltInitialCastleRef.current) {
-            hasBuiltInitialCastleRef.current = true;
-            buildCastle();
-        }
-    }, [GRID_HEIGHT, GRID_WIDTH, addGrainRecord, buildCastle, getPureSandColor]);
+        buildCastle();
+    }, [addStaticGrain, buildCastle, getPureSandColor]);
 
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -499,10 +526,55 @@ const Canvas = (): React.JSX.Element => {
     }, []);
 
     React.useEffect(() => {
+        const handleResize = () => {
+            const newWidth = Math.max(1, Math.floor(window.innerWidth / SQUARE_SIZE));
+            const newHeight = Math.max(1, Math.floor(window.innerHeight / SQUARE_SIZE));
+            if (newWidth === gridWidthRef.current && newHeight === gridHeightRef.current) return;
+
+            gridWidthRef.current = newWidth;
+            gridHeightRef.current = newHeight;
+
+            const rebuiltGrid = createOccupancyGrid(newHeight, newWidth);
+            const keptGrains: GrainRecord[] = [];
+
+            for (const grain of activeGrainsRef.current) {
+                if (grain.removed) continue;
+                const cellKey = getCellKey(grain.gridX, grain.gridY);
+                const ownsCell = grainsByCellRef.current.get(cellKey) === grain;
+
+                if (grain.gridX >= newWidth || grain.gridY >= newHeight) {
+                    grain.removed = true;
+                    if (ownsCell) grainsByCellRef.current.delete(cellKey);
+                    grain.element.remove();
+                    continue;
+                }
+
+                if (ownsCell) rebuiltGrid[grain.gridY][grain.gridX] = true;
+                keptGrains.push(grain);
+            }
+
+            occupiedPositions.current = rebuiltGrid;
+            activeGrainsRef.current = keptGrains;
+            triggerCascadeSettle(0, newWidth - 1);
+        };
+
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [triggerCascadeSettle]);
+
+    React.useEffect(() => {
+        const pendingTimeouts = pendingTimeoutsRef.current;
+        disposedRef.current = false;
         return () => {
-            if (globalSettleTimeoutRef.current !== null) {
-                window.clearTimeout(globalSettleTimeoutRef.current);
-                globalSettleTimeoutRef.current = null;
+            disposedRef.current = true;
+            for (const timeoutId of pendingTimeouts) {
+                window.clearTimeout(timeoutId);
+            }
+            pendingTimeouts.clear();
+            globalSettleTimeoutRef.current = null;
+            if (chargeAnimationFrameRef.current !== null) {
+                cancelAnimationFrame(chargeAnimationFrameRef.current);
+                chargeAnimationFrameRef.current = null;
             }
         };
     }, []);
@@ -512,7 +584,7 @@ const Canvas = (): React.JSX.Element => {
 
         const updateChargePreview = () => {
             const chargeStart = chargeStartRef.current;
-            if (!chargeStart) {
+            if (disposedRef.current || !chargeStart) {
                 chargeAnimationFrameRef.current = null;
                 return;
             }
@@ -532,7 +604,8 @@ const Canvas = (): React.JSX.Element => {
 
     const handleMouseDown = (event: React.MouseEvent) => {
         const { gridX, gridY } = getClampedGridPosition(event.clientX, event.clientY);
-        if (occupiedPositions.current[gridY][gridX]) {
+        const grainAtCell = grainsByCellRef.current.get(getCellKey(gridX, gridY));
+        if (grainAtCell?.settled) {
             setIsMouseDown(false);
             chargeStartRef.current = { timeMs: performance.now(), gridX, gridY };
             setChargePreview({

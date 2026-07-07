@@ -1,7 +1,7 @@
 import React from 'react';
 import './App.css';
 import './styles/main.scss';
-import Canvas from './app/canvas/canvas.tsx';
+import Canvas from './app/canvas/canvas';
 
 function App() {
   return (
