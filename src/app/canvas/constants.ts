@@ -15,7 +15,9 @@ export const EXPLOSION_FULL_CHARGE_MS = 1200;
 export const INITIAL_SAND_HEIGHT_RATIO = 0.04;
 export const INITIAL_SAND_BASE_HUE = 40;
 
-export const DROP_SAND_HUE_STEP = 0.5;
+// Hue advances once per pour burst (not per grain), so grains poured close
+// together stay chromatically close even if they shuffle while settling.
+export const DROP_SAND_HUE_STEP = 2;
 export const DROP_SAND_SATURATION = 100;
 export const DROP_SAND_LIGHTNESS = 55;
 export const PURE_SAND_SATURATION = 58;
@@ -31,9 +33,11 @@ export const MATERIAL_WATER = 0xfc;
 export const WATER_HUE = 205;
 export const WATER_SATURATION = 82;
 export const WATER_LIGHTNESS = 52;
-export const WATER_TERMINAL_FALL_CELLS_PER_S = 24;
-export const WATER_FLOW_HOPS_PER_TICK = 2;
-export const WATER_MAX_FLOW_HOPS = 80;
+export const WATER_TERMINAL_FALL_CELLS_PER_S = 40;
+export const WATER_FLOW_HOPS_PER_TICK = 8;
+export const WATER_MAX_FLOW_HOPS = 400;
+// How far along the pool surface a grain searches for a spot to drop into.
+export const WATER_LEVEL_SCAN_RANGE = 64;
 
 export const STONE_HUE = 222;
 export const STONE_SATURATION = 8;

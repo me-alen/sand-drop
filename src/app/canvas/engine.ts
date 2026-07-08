@@ -31,6 +31,7 @@ import {
     TOPPLE_HEIGHT_DIFF_CELLS,
     WATER_FLOW_HOPS_PER_TICK,
     WATER_HUE,
+    WATER_LEVEL_SCAN_RANGE,
     WATER_LIGHTNESS,
     WATER_MAX_FLOW_HOPS,
     WATER_SATURATION,
@@ -191,6 +192,9 @@ export class SandEngine {
     handleResize(): void {
         const cssWidth = Math.max(1, this.canvas.clientWidth || window.innerWidth);
         const cssHeight = Math.max(1, this.canvas.clientHeight || window.innerHeight);
+        // Backgrounded tabs and mid-rotation layouts can report a ~zero size;
+        // rebuilding the grid from that would wipe the whole sandbox.
+        if (this.cols > 0 && (cssWidth < 40 || cssHeight < 40)) return;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
         this.cssWidth = cssWidth;
@@ -476,7 +480,7 @@ export class SandEngine {
         }
 
         let remaining = p.vy * dt;
-        let hops = 0;
+        let flowedThisTick = false;
         let guard = 0;
         while (remaining > 0 && guard++ < 64) {
             const cx = this.clampCol(Math.floor(p.x));
@@ -515,28 +519,65 @@ export class SandEngine {
                 continue;
             }
 
-            // Level out: hop sideways looking for somewhere lower.
-            if (hops < WATER_FLOW_HOPS_PER_TICK) {
-                if (this.isFree(cx + dir, cy)) {
-                    p.x = cx + dir + 0.5;
-                } else if (this.isFree(cx - dir, cy)) {
-                    p.x = cx - dir + 0.5;
-                } else {
-                    this.settleWater(p, cx, cy);
-                    return false;
-                }
-                hops++;
-                p.flow++;
-                remaining -= 0.5;
-                if (p.flow > WATER_MAX_FLOW_HOPS) {
-                    this.settleWater(p, this.clampCol(Math.floor(p.x)), cy);
-                    return false;
-                }
-                continue;
+            // On the pool surface: run toward the nearest reachable drop so
+            // pools level out instead of mounding into pyramids.
+            if (flowedThisTick) return true;
+            flowedThisTick = true;
+
+            const flowDir = this.findWaterDropDirection(cx, cy);
+            if (flowDir === 0) {
+                this.settleWater(p, cx, cy);
+                return false;
             }
-            return true;
+            let runCol = cx;
+            for (let hop = 0; hop < WATER_FLOW_HOPS_PER_TICK; hop++) {
+                const next = runCol + flowDir;
+                if (!this.isFree(next, cy)) break;
+                runCol = next;
+                if (this.pixelAt(runCol, nextY) === 0) break;
+            }
+            if (runCol === cx) {
+                this.settleWater(p, cx, cy);
+                return false;
+            }
+            p.x = runCol + 0.5;
+            p.vx = flowDir * 4;
+            p.vy = Math.min(p.vy, 8);
+            p.flow++;
+            if (p.flow > WATER_MAX_FLOW_HOPS) {
+                this.settleWater(p, runCol, cy);
+                return false;
+            }
+            continue;
         }
         return true;
+    }
+
+    // Walk both directions along the pool surface (row cy) and return the
+    // direction of the nearest column where the water can fall, or 0 if the
+    // surface is level as far as the scan reaches. Solid cells at surface
+    // height act as walls and stop the scan.
+    private findWaterDropDirection(cx: number, cy: number): number {
+        if (cy + 1 >= this.rows) return 0;
+        const preferred =
+            Math.abs(this.gravityX) > 20 ? (this.gravityX > 0 ? 1 : -1) : Math.random() < 0.5 ? -1 : 1;
+        const other = -preferred;
+        let preferredOpen = true;
+        let otherOpen = true;
+        for (let d = 1; d <= WATER_LEVEL_SCAN_RANGE; d++) {
+            if (preferredOpen) {
+                const col = cx + preferred * d;
+                if (!this.isFree(col, cy)) preferredOpen = false;
+                else if (this.pixelAt(col, cy + 1) === 0) return preferred;
+            }
+            if (otherOpen) {
+                const col = cx + other * d;
+                if (!this.isFree(col, cy)) otherOpen = false;
+                else if (this.pixelAt(col, cy + 1) === 0) return other;
+            }
+            if (!preferredOpen && !otherOpen) return 0;
+        }
+        return 0;
     }
 
     private moveHorizontally(p: Particle, dt: number, blocks: (pixel: number) => boolean): void {
@@ -610,8 +651,51 @@ export class SandEngine {
         let y = cellY;
         while (y >= 0 && this.pixelAt(cellX, y) !== 0) y--;
         if (y < 0) return;
+
+        // Hydrostatic leveling: never rest on top of other water while the
+        // pool surface is lower somewhere reachable. Water cells don't block
+        // the search (pressure equalizes through the pool); solids do.
+        if (y + 1 < this.rows && this.pixelAt(cellX, y + 1) >>> 24 === MATERIAL_WATER) {
+            const targetCol = this.findWaterEqualizeColumn(cellX, y);
+            if (targetCol !== cellX) {
+                let restY = y;
+                while (restY + 1 < this.rows && this.pixelAt(targetCol, restY + 1) === 0) restY++;
+                this.setCell(targetCol, restY, p.color);
+                this.markDirtyAround(targetCol);
+                return;
+            }
+        }
+
         this.setCell(cellX, y, p.color);
         this.markDirtyAround(cellX);
+    }
+
+    // Find the nearest column (along row cy) whose free surface is strictly
+    // lower than cy, walking over water but stopping at solid walls.
+    private findWaterEqualizeColumn(cx: number, cy: number): number {
+        if (cy + 1 >= this.rows) return cx;
+        const preferred =
+            Math.abs(this.gravityX) > 20 ? (this.gravityX > 0 ? 1 : -1) : Math.random() < 0.5 ? -1 : 1;
+        const directions = [preferred, -preferred];
+        const open = [true, true];
+        for (let d = 1; d <= WATER_LEVEL_SCAN_RANGE; d++) {
+            for (let k = 0; k < 2; k++) {
+                if (!open[k]) continue;
+                const col = cx + directions[k] * d;
+                if (col < 0 || col >= this.cols) {
+                    open[k] = false;
+                    continue;
+                }
+                const cell = this.pixelAt(col, cy);
+                if (cell !== 0 && cell >>> 24 !== MATERIAL_WATER) {
+                    open[k] = false; // solid wall
+                    continue;
+                }
+                if (cell === 0 && this.pixelAt(col, cy + 1) === 0) return col;
+            }
+            if (!open[0] && !open[1]) return cx;
+        }
+        return cx;
     }
 
     private relaxDirtyColumns(): void {
@@ -648,6 +732,23 @@ export class SandEngine {
                         this.particles.push(this.makeParticle(col + 0.5, y + 0.5, dir * 4, 0, pixel));
                         newlyDirty.push(col, col + dir);
                     }
+                }
+            }
+
+            // Settled water drains toward level: move this column's surface
+            // cell to the nearest strictly-lower reachable spot. Chained over
+            // dirty columns this flattens whole pools — including mounds
+            // restored from old saves.
+            const waterTop = this.waterSurfaceOf(col);
+            if (waterTop !== -1) {
+                const targetCol = this.findWaterEqualizeColumn(col, waterTop);
+                if (targetCol !== col) {
+                    const color = this.pixels[waterTop * this.cols + col];
+                    this.clearCell(col, waterTop);
+                    let restY = waterTop;
+                    while (restY + 1 < this.rows && this.pixelAt(targetCol, restY + 1) === 0) restY++;
+                    this.setCell(targetCol, restY, color);
+                    newlyDirty.push(col, targetCol);
                 }
             }
 
@@ -688,6 +789,16 @@ export class SandEngine {
         return this.rows;
     }
 
+    // Row of this column's topmost cell if that cell is water, else -1.
+    private waterSurfaceOf(col: number): number {
+        for (let y = 0; y < this.rows; y++) {
+            const pixel = this.pixels[y * this.cols + col];
+            if (pixel === 0) continue;
+            return pixel >>> 24 === MATERIAL_WATER ? y : -1;
+        }
+        return -1;
+    }
+
     // ---------------------------------------------------------------- brushes
 
     private applyBrush(cssX: number, cssY: number): void {
@@ -708,8 +819,12 @@ export class SandEngine {
     }
 
     private spawnGrains(cssX: number, cssY: number, kind: 'sand' | 'water'): void {
+        // All grains of one burst share a hue so deposits stay chromatically
+        // coherent even when settling shuffles them (e.g. sinking in water).
+        const burstHue = kind === 'sand' && this.useColoredDrops ? this.hue : null;
+
         for (let i = 0; i < this.grainsPerDrop; i++) {
-            if (this.particles.length >= MAX_ACTIVE_PARTICLES) return;
+            if (this.particles.length >= MAX_ACTIVE_PARTICLES) break;
             const cellX = this.clampCol(Math.floor(cssX / CELL) + Math.round((Math.random() - 0.5) * 4));
             let cellY = this.clampRow(Math.floor(cssY / CELL));
 
@@ -720,8 +835,24 @@ export class SandEngine {
             while (tries-- > 0 && cellY > 0 && blocked(this.pixelAt(cellX, cellY))) cellY--;
             if (blocked(this.pixelAt(cellX, cellY))) continue;
 
-            const color = kind === 'water' ? this.waterColor() : this.dropSandColor();
+            let color: number;
+            if (kind === 'water') {
+                color = this.waterColor();
+            } else if (burstHue !== null) {
+                color = hslToPackedColor(
+                    burstHue + (Math.random() * 4 - 2),
+                    DROP_SAND_SATURATION,
+                    DROP_SAND_LIGHTNESS + (Math.random() * 6 - 3),
+                    MATERIAL_SAND
+                );
+            } else {
+                color = this.pureSandColor();
+            }
             this.particles.push(this.makeParticle(cellX + 0.5, cellY + 0.5, (Math.random() - 0.5) * 3, 0, color));
+        }
+
+        if (burstHue !== null) {
+            this.hue = (burstHue + DROP_SAND_HUE_STEP) % 360;
         }
     }
 
@@ -850,18 +981,6 @@ export class SandEngine {
             PURE_SAND_LIGHTNESS,
             material
         );
-    }
-
-    private dropSandColor(): number {
-        if (!this.useColoredDrops) return this.pureSandColor();
-        const color = hslToPackedColor(
-            this.hue,
-            DROP_SAND_SATURATION,
-            DROP_SAND_LIGHTNESS + (Math.random() * 6 - 3),
-            MATERIAL_SAND
-        );
-        this.hue = (this.hue + DROP_SAND_HUE_STEP) % 360;
-        return color;
     }
 
     private waterColor(): number {

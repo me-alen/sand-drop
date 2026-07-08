@@ -92,15 +92,30 @@ type BottomBarProps = {
     onBrushChange: (brush: Brush) => void;
     grainsPerDrop: number;
     onGrainsChange: (delta: number) => void;
+    hidden: boolean;
+    onReveal: () => void;
+    onKeepVisible: () => void;
 };
 
 export const BottomBar = ({
     brush,
     onBrushChange,
     grainsPerDrop,
-    onGrainsChange
+    onGrainsChange,
+    hidden,
+    onReveal,
+    onKeepVisible
 }: BottomBarProps): React.JSX.Element => (
-    <div className="hud hud--bottom" onPointerDown={stopPointer} onPointerUp={stopPointer}>
+    <>
+    <div
+        className={`hud hud--bottom ${hidden ? 'hud--bottom-hidden' : ''}`}
+        onPointerDown={(event) => {
+            stopPointer(event);
+            onKeepVisible();
+        }}
+        onPointerUp={stopPointer}
+        onPointerMove={onKeepVisible}
+    >
         {BRUSHES.map(({ kind, label }) => (
             <button
                 key={kind}
@@ -132,4 +147,14 @@ export const BottomBar = ({
             +
         </button>
     </div>
+    <button
+        type="button"
+        className={`hud-handle ${hidden ? '' : 'hud-handle--hidden'}`}
+        aria-label="Show brush controls"
+        title="Show controls"
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+        onClick={onReveal}
+    />
+    </>
 );

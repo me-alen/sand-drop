@@ -8,6 +8,8 @@ import { Brush, SandEngine } from './engine';
 import { clearGrid, loadGrid, loadSettings, saveGrid, saveSettings } from './storage';
 
 const AUTOSAVE_INTERVAL_MS = 20000;
+const BOTTOM_BAR_HIDE_DELAY_MS = 2000;
+const BOTTOM_REVEAL_ZONE_PX = 90;
 
 const tiltSupported = (): boolean =>
     'DeviceOrientationEvent' in window && navigator.maxTouchPoints > 0;
@@ -26,6 +28,29 @@ const Canvas = (): React.JSX.Element => {
     const [muted, setMuted] = React.useState(storedSettings?.muted ?? false);
     const [brush, setBrush] = React.useState<Brush>('sand');
     const [tiltEnabled, setTiltEnabled] = React.useState(false);
+    const [bottomBarHidden, setBottomBarHidden] = React.useState(false);
+    const barHideTimerRef = React.useRef<number | null>(null);
+    const pointerActiveRef = React.useRef(false);
+
+    const scheduleBarHide = React.useCallback((delayMs = BOTTOM_BAR_HIDE_DELAY_MS) => {
+        if (barHideTimerRef.current !== null) window.clearTimeout(barHideTimerRef.current);
+        barHideTimerRef.current = window.setTimeout(() => {
+            barHideTimerRef.current = null;
+            setBottomBarHidden(true);
+        }, delayMs);
+    }, []);
+
+    const revealBottomBar = React.useCallback(() => {
+        setBottomBarHidden(false);
+        scheduleBarHide();
+    }, [scheduleBarHide]);
+
+    React.useEffect(() => {
+        scheduleBarHide(2500);
+        return () => {
+            if (barHideTimerRef.current !== null) window.clearTimeout(barHideTimerRef.current);
+        };
+    }, [scheduleBarHide]);
 
     React.useEffect(() => {
         const canvas = canvasRef.current;
@@ -163,6 +188,7 @@ const Canvas = (): React.JSX.Element => {
         const engine = engineRef.current;
         if (!engine) return;
         gameAudio.unlock();
+        pointerActiveRef.current = true;
         try {
             event.currentTarget.setPointerCapture(event.pointerId);
         } catch {
@@ -174,9 +200,15 @@ const Canvas = (): React.JSX.Element => {
 
     const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
         engineRef.current?.pointerMoveTo(event.clientX, event.clientY);
+        // Hovering near the bottom edge (while not drawing) reveals the bar.
+        if (!pointerActiveRef.current && event.clientY > window.innerHeight - BOTTOM_REVEAL_ZONE_PX) {
+            if (bottomBarHidden) setBottomBarHidden(false);
+            scheduleBarHide();
+        }
     };
 
     const handlePointerUp = () => {
+        pointerActiveRef.current = false;
         engineRef.current?.pointerUp();
     };
 
@@ -207,11 +239,18 @@ const Canvas = (): React.JSX.Element => {
             />
             <BottomBar
                 brush={brush}
-                onBrushChange={setBrush}
+                onBrushChange={(next) => {
+                    setBrush(next);
+                    revealBottomBar();
+                }}
                 grainsPerDrop={grainsPerDrop}
-                onGrainsChange={(delta) =>
-                    setGrainsPerDrop((current) => Math.max(1, Math.min(current + delta, MAX_GRAINS_PER_DROP)))
-                }
+                onGrainsChange={(delta) => {
+                    setGrainsPerDrop((current) => Math.max(1, Math.min(current + delta, MAX_GRAINS_PER_DROP)));
+                    revealBottomBar();
+                }}
+                hidden={bottomBarHidden}
+                onReveal={revealBottomBar}
+                onKeepVisible={revealBottomBar}
             />
             {!hasStartedDropping && <InstructionOverlay />}
         </div>
