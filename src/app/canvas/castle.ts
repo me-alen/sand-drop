@@ -1,16 +1,16 @@
 type CastleBuildContext = {
     gridWidth: number;
     gridHeight: number;
-    occupiedPositions: boolean[][];
-    addStaticGrain: (gridX: number, gridY: number, color: string) => boolean;
-    getPureSandColor: () => string;
+    isOccupied: (gridX: number, gridY: number) => boolean;
+    addGrain: (gridX: number, gridY: number, color: number) => boolean;
+    getPureSandColor: () => number;
 };
 
 export const buildRandomSandCastle = ({
     gridWidth,
     gridHeight,
-    occupiedPositions,
-    addStaticGrain,
+    isOccupied,
+    addGrain,
     getPureSandColor
 }: CastleBuildContext): void => {
     const castleType = Math.floor(Math.random() * 3);
@@ -30,7 +30,7 @@ export const buildRandomSandCastle = ({
     for (let x = startX; x <= endX; x++) {
         let surfaceY = gridHeight;
         for (let y = 0; y < gridHeight; y++) {
-            if (occupiedPositions[y][x]) {
+            if (isOccupied(x, y)) {
                 surfaceY = y;
                 break;
             }
@@ -73,7 +73,7 @@ export const buildRandomSandCastle = ({
         const color = getPureSandColor();
 
         for (let y = baseY + 1; y < thisSurfaceY; y++) {
-            addStaticGrain(x, y, color);
+            addGrain(x, y, color);
         }
 
         for (let h = 0; h < columnHeight; h++) {
@@ -84,7 +84,7 @@ export const buildRandomSandCastle = ({
                     : Math.floor(wallHeight * (castleType === 2 ? 0.65 : 0.6));
             const inGate = x >= gateStartX && x < gateStartX + gateWidth && h < gateDepth;
             if (inGate) continue;
-            addStaticGrain(x, y, color);
+            addGrain(x, y, color);
         }
 
         const shouldAddCrenellation =
@@ -92,7 +92,7 @@ export const buildRandomSandCastle = ({
                 ? localIndex % 3 === 0
                 : localIndex % 2 === 0;
         if (shouldAddCrenellation && (x < gateStartX || x >= gateStartX + gateWidth)) {
-            addStaticGrain(x, baseY - columnHeight, color);
+            addGrain(x, baseY - columnHeight, color);
         }
     }
 };

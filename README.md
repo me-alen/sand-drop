@@ -1,7 +1,7 @@
 # Sand Drop
 
-Interactive browser-based sand simulation built with React + TypeScript.  
-Drop grains, create pile explosions, and switch between vibrant and pure sand visuals.
+Interactive browser-based sand simulation built with React + TypeScript.
+Pour grains, build dunes, and set off charged explosions under a starlit sky.
 
 ## Live Demo
 
@@ -9,43 +9,49 @@ Drop grains, create pile explosions, and switch between vibrant and pure sand vi
 
 ## Features
 
-- Real-time sand dropping with gravity + slide behavior
-- Smooth color cycling mode for dropped grains
-- Pure sand mode with natural sand tones
-- Click-and-hold charged explosions (bigger hold = bigger blast)
-- Parabolic explosion trajectories with momentum-aware settling
-- Automatic collapse of unsupported grains after blasts
-- Randomized base sand terrain on load
-- Random sand castle generation at startup
-- Keyboard control for grain amount per drop
+- Canvas-based falling-sand engine — the whole scene renders as a single
+  `<canvas>` backed by a typed-array grid, so performance stays flat no matter
+  how much sand piles up
+- Real-time pouring with gravity, sliding, and natural pile formation
+- Click-and-hold charged explosions (longer hold = bigger blast) with real
+  ballistic arcs for the displaced grains
+- Explosion juice: flash, expanding shockwaves, sparks, and screen shake
+- Charge-up indicator: a breathing glow with inward-contracting energy rings
+  and a progress dial
+- Automatic collapse of unsupported sand after blasts
+- Rainbow mode (smooth hue cycling) and pure-sand mode
+- Twinkling starfield over a night-sky gradient
+- Randomized dune terrain and a random sand castle on load, plus a Reset button
+- Full touch support — playable on phones and tablets
+- On-screen grains-per-drop control (also mapped to arrow keys)
 
 ## Controls
 
-- **Click / drag**: drop sand
-- **Arrow Up**: increase grains per drop
-- **Arrow Down**: decrease grains per drop
-- **Hold click on an existing pile**: charge explosion
-- **Release after hold**: trigger explosion
-- **Top-right mode toggle**: switch `Colored` / `Pure Sand`
+- **Tap / click / drag**: pour sand
+- **Hold on sand**: charge an explosion, release to detonate
+- **Arrow Up / Down** or the **− / + pill**: change grains per drop
+- **Top-right toggle**: switch `Rainbow` / `Pure Sand`
+- **↺ Reset**: regenerate the terrain and castle
 
 ## Tech Stack
 
 - React 18
 - TypeScript
 - Create React App (`react-scripts`)
-- Sass (minimal global styling)
+- Canvas 2D rendering (no per-grain DOM nodes)
+- Sass (global styling)
 
 ## Project Structure
 
 ```text
 src/
   app/canvas/
-    canvas.tsx              # Main simulation orchestration
+    canvas.tsx              # React wrapper: pointer input, HUD state, engine lifecycle
+    engine.ts               # Falling-sand engine: grid, particles, effects, rendering
+    color.ts                # HSL -> packed RGBA color helpers
     constants.ts            # Simulation/config constants
-    types.ts                # Shared type definitions
     castle.ts               # Castle generation logic
-    ModeToggle.tsx          # UI toggle component
-    ChargePreviewRing.tsx   # Explosion charge indicator
+    Hud.tsx                 # Mode toggle, reset, grains-per-drop controls
     InstructionOverlay.tsx  # On-screen instruction UI
   App.tsx
   index.tsx
@@ -86,12 +92,3 @@ npm run build
 Current homepage setting in `package.json` points to:
 
 - `https://sand-drop.vercel.app`
-
-## Notes
-
-- If the favicon looks stale after updates, hard refresh (`Cmd+Shift+R`) to clear browser icon cache.
-- Browserslist warning can be updated with:
-
-```bash
-npx update-browserslist-db@latest
-```
