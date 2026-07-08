@@ -96,6 +96,76 @@ body {
     line-height: 1;
 }
 
+.hud-button--icon {
+    width: 2.3rem;
+    height: 2.3rem;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.hud-button--active {
+    border-color: rgba(255, 215, 140, 0.85);
+    background: rgba(255, 190, 110, 0.2);
+}
+
+.material-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border-radius: 0.65rem;
+    border: 2px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.material-button:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.material-button--active {
+    border-color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.material-swatch {
+    display: block;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 0.3rem;
+}
+
+.material-swatch--sand {
+    background: hsl(40, 58%, 66%);
+}
+
+.material-swatch--water {
+    background: hsl(205, 82%, 52%);
+}
+
+.material-swatch--stone {
+    background: hsl(222, 8%, 42%);
+}
+
+.material-swatch--erase {
+    width: 0.9rem;
+    height: 0.9rem;
+    background: transparent;
+    border: 2px dashed rgba(255, 255, 255, 0.65);
+}
+
+.hud-divider {
+    width: 1px;
+    height: 1.4rem;
+    margin: 0 0.2rem;
+    background: rgba(255, 255, 255, 0.18);
+}
+
 .mode-dot {
     width: 0.7rem;
     height: 0.7rem;

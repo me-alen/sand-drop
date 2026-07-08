@@ -11,6 +11,7 @@ const InstructionOverlay = (): React.JSX.Element => {
                 <span className="keycap">↓</span>
             </div>
             <div className="instruction-overlay__hint">Hold on sand to charge an explosion</div>
+            <div className="instruction-overlay__hint">Pick sand, water, stone, or eraser below</div>
         </div>
     );
 };

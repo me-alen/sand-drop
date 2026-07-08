@@ -20,3 +20,30 @@ export const DROP_SAND_SATURATION = 100;
 export const DROP_SAND_LIGHTNESS = 55;
 export const PURE_SAND_SATURATION = 58;
 export const PURE_SAND_LIGHTNESS = 66;
+
+// Materials are stored in the alpha byte of each packed grid pixel. All values
+// sit close to 0xff so occupied cells stay visually opaque; 0 = empty cell.
+export const MATERIAL_SAND = 0xff;
+export const MATERIAL_PACKED_SAND = 0xfe;
+export const MATERIAL_STONE = 0xfd;
+export const MATERIAL_WATER = 0xfc;
+
+export const WATER_HUE = 205;
+export const WATER_SATURATION = 82;
+export const WATER_LIGHTNESS = 52;
+export const WATER_TERMINAL_FALL_CELLS_PER_S = 24;
+export const WATER_FLOW_HOPS_PER_TICK = 2;
+export const WATER_MAX_FLOW_HOPS = 80;
+
+export const STONE_HUE = 222;
+export const STONE_SATURATION = 8;
+export const STONE_LIGHTNESS = 42;
+export const STONE_BRUSH_RADIUS_CELLS = 1.6;
+export const ERASE_BRUSH_RADIUS_CELLS = 3.2;
+
+// A column of loose sand topples when it stands this many cells above a
+// neighbouring column's surface.
+export const TOPPLE_HEIGHT_DIFF_CELLS = 2;
+
+// Fraction of vertical gravity applied sideways at full device tilt.
+export const TILT_MAX_GRAVITY_RATIO = 0.55;
