@@ -302,13 +302,39 @@ describe('die-off', () => {
         expect(floraRows(world, 2)).toHaveLength(0);
     });
 
-    it('leaves flora entombed under sand alone', () => {
-        const world = makeWorld(); // sand has fallen onto the kelp tip
+    it('dries out flora buried under sand', () => {
+        const world = makeWorld(); // sand has fallen over the kelp, sealing it off
         fill(world, 2, 10, 12, WATER_CELL);
         world.map.set('2,13', SAND_CELL);
         fill(world, 2, 14, 19, kelpColor(() => 0));
         fill(world, 2, 20, 29, SAND_CELL);
         const result = updateFloraColumn(makeCtx(world, () => 0), 2);
+        expect(result.died).toHaveLength(6);
+        expect(floraRows(world, 2)).toHaveLength(0);
+    });
+
+    it('keeps the submerged half of a stalk the water has dropped below', () => {
+        // Water only reaches the lower half, beside rows 16..19. The exposed
+        // tip should dry off while the wet base carries on living.
+        const world = makeWorld();
+        fill(world, 2, 12, 19, kelpColor(() => 0));
+        fill(world, 2, 20, 29, SAND_CELL);
+        fill(world, 1, 16, 19, WATER_CELL);
+        fill(world, 1, 20, 29, SAND_CELL);
+        const result = updateFloraColumn(makeCtx(world, () => 1), 2);
+
+        expect(result.died).toHaveLength(4); // rows 12..15, the dry ones
+        expect(floraRows(world, 2)).toEqual([16, 17, 18, 19]);
+    });
+
+    it('spares flora with water only at its side', () => {
+        // Sand caps the stalk, but open water still touches the tip sideways.
+        const world = makeWorld();
+        world.map.set('2,13', SAND_CELL);
+        fill(world, 2, 14, 19, kelpColor(() => 0));
+        fill(world, 2, 20, 29, SAND_CELL);
+        fill(world, 1, 10, 19, WATER_CELL);
+        const result = updateFloraColumn(makeCtx(world, () => 1), 2);
         expect(result.died).toHaveLength(0);
         expect(floraRows(world, 2)).toHaveLength(6);
     });

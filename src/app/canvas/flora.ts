@@ -138,22 +138,26 @@ export const updateFloraColumn = (ctx: FloraContext, col: number): FloraColumnRe
         x < 0 || x >= cols || y < 0 || y >= rows ? -1 : ctx.materialAt(x, y);
     const mat = (y: number): number => matAt(col, y);
 
-    // Descend the settled profile: [air] [water] [flora] [bed].
-    let y = 0;
-    while (y < rows && mat(y) === 0) y++;
-    const waterTop = mat(y) === MATERIAL_WATER ? y : -1;
-    while (y < rows && mat(y) === MATERIAL_WATER) y++;
-    let floraStart = y < rows && isFlora(mat(y)) ? y : -1;
-    const floraMaterial = floraStart === -1 ? 0 : mat(floraStart);
-    while (y < rows && isFlora(mat(y))) y++;
-    const floraEnd = floraStart === -1 ? -1 : y - 1;
-    const bedY = y; // first cell below the flora run (or below the water if no flora)
-    const bedMat = mat(bedY);
-    // depth = distance from the water surface down to the floor (water + flora).
-    const depth = waterTop === -1 ? 0 : bedY - waterTop;
+    // Find the topmost flora run wherever it sits in the column. It may be
+    // buried under sand rather than sitting under open water, and buried flora
+    // is exactly what has to be pruned.
+    let floraStart = -1;
+    for (let scan = 0; scan < rows; scan++) {
+        if (isFlora(mat(scan))) {
+            floraStart = scan;
+            break;
+        }
+    }
 
-    // ---- Cull: unsupported run (support was erased/blasted out from under it).
     if (floraStart !== -1) {
+        const floraMaterial = mat(floraStart);
+        let below = floraStart;
+        while (below < rows && isFlora(mat(below))) below++;
+        const floraEnd = below - 1;
+        const bedY = below;
+        const bedMat = mat(bedY);
+
+        // ---- Cull: unsupported run (support erased or blasted out from under it).
         const supported = bedMat === -1 || isBed(bedMat) || isFlora(bedMat);
         if (!supported) {
             for (let fy = floraStart; fy <= floraEnd; fy++) {
@@ -163,46 +167,88 @@ export const updateFloraColumn = (ctx: FloraContext, col: number): FloraColumnRe
             return { grew, died };
         }
 
-        // ---- Cull: exposed tip (water drained away above it). Kill top-down
-        // until the tip is under water again; stop if sand has entombed it.
+        // ---- Cull: anything no longer in contact with water dries out. Walk
+        // down from the tip and stop at the first cell that still touches
+        // water, so a partly drained stalk keeps its submerged half and a wide
+        // clump is never hollowed out from the inside.
         while (floraStart <= floraEnd) {
-            const above = mat(floraStart - 1);
-            if (above === MATERIAL_WATER) break; // submerged — healthy
-            if (above !== 0) break; // solid above (fossilized under sand) — leave it
+            const touchesWater =
+                mat(floraStart - 1) === MATERIAL_WATER ||
+                matAt(col - 1, floraStart) === MATERIAL_WATER ||
+                matAt(col + 1, floraStart) === MATERIAL_WATER;
+            if (touchesWater) break;
             ctx.clearCell(col, floraStart);
             died.push({ x: col, y: floraStart, material: floraMaterial });
             floraStart++;
         }
-        if (floraStart > floraEnd) return { grew, died }; // whole run exposed and gone
+        if (floraStart > floraEnd) return { grew, died }; // dried out entirely
+
+        // Open water directly above is what growth measures its depth against.
+        let waterTop = -1;
+        for (let up = floraStart - 1; up >= 0 && mat(up) === MATERIAL_WATER; up--) waterTop = up;
+        if (waterTop === -1) return { grew, died }; // alive, but boxed in — no room to grow
+
+        return growFlora(ctx, col, {
+            grew,
+            died,
+            floraStart,
+            floraEnd,
+            floraMaterial,
+            waterTop,
+            depth: bedY - waterTop,
+            matAt,
+            mat
+        });
     }
+
+    // ---- No flora here: descend [air] [water] [bed] looking for a seed spot.
+    let y = 0;
+    while (y < rows && mat(y) === 0) y++;
+    const waterTop = mat(y) === MATERIAL_WATER ? y : -1;
+    while (y < rows && mat(y) === MATERIAL_WATER) y++;
+    const bedY = y;
+    const bedMat = mat(bedY);
+    const depth = waterTop === -1 ? 0 : bedY - waterTop;
 
     // ---- Seed: bare, deep-enough pool on a solid floor.
-    if (floraStart === -1) {
-        if (waterTop === -1 || depth < FLORA_MIN_WATER_DEPTH_CELLS || !isBed(bedMat)) {
-            return { grew, died };
-        }
-        const seedY = bedY - 1; // one cell above the floor, inside the water
-        if (mat(seedY) !== MATERIAL_WATER) return { grew, died };
-
-        // A column belongs to either a coral patch or the kelp bed, never both,
-        // so reef clumps stay solid instead of being split by stray stalks.
-        const roll = ctx.random();
-        if (coralAllowedInColumn(col)) {
-            const nearCoral =
-                matAt(col - 1, seedY) === MATERIAL_CORAL || matAt(col + 1, seedY) === MATERIAL_CORAL;
-            const coralChance = CORAL_SEED_CHANCE * (nearCoral ? CORAL_CLUSTER_SEED_MULTIPLIER : 1);
-            if (roll < coralChance) {
-                ctx.setCell(col, seedY, coralColor(coralHueForColumn(col), ctx.random));
-                grew.push({ x: col, y: seedY });
-            }
-        } else if (kelpAllowedInColumn(col) && roll < KELP_SEED_CHANCE) {
-            ctx.setCell(col, seedY, kelpColor(ctx.random));
-            grew.push({ x: col, y: seedY });
-        }
+    if (waterTop === -1 || depth < FLORA_MIN_WATER_DEPTH_CELLS || !isBed(bedMat)) {
         return { grew, died };
     }
+    const seedY = bedY - 1; // one cell above the floor, inside the water
+    if (mat(seedY) !== MATERIAL_WATER) return { grew, died };
 
-    // ---- Grow: extend an existing, submerged run within its depth cap.
+    // A column belongs to either a coral patch or the kelp bed, never both,
+    // so reef clumps stay solid instead of being split by stray stalks.
+    const roll = ctx.random();
+    if (coralAllowedInColumn(col)) {
+        const nearCoral =
+            matAt(col - 1, seedY) === MATERIAL_CORAL || matAt(col + 1, seedY) === MATERIAL_CORAL;
+        const coralChance = CORAL_SEED_CHANCE * (nearCoral ? CORAL_CLUSTER_SEED_MULTIPLIER : 1);
+        if (roll < coralChance) {
+            ctx.setCell(col, seedY, coralColor(coralHueForColumn(col), ctx.random));
+            grew.push({ x: col, y: seedY });
+        }
+    } else if (kelpAllowedInColumn(col) && roll < KELP_SEED_CHANCE) {
+        ctx.setCell(col, seedY, kelpColor(ctx.random));
+        grew.push({ x: col, y: seedY });
+    }
+    return { grew, died };
+};
+
+type GrowArgs = FloraColumnResult & {
+    floraStart: number;
+    floraEnd: number;
+    floraMaterial: number;
+    waterTop: number;
+    depth: number;
+    matAt: (x: number, y: number) => number;
+    mat: (y: number) => number;
+};
+
+// Extends a living, submerged run within its depth cap.
+const growFlora = (ctx: FloraContext, col: number, args: GrowArgs): FloraColumnResult => {
+    const { grew, died, floraStart, floraEnd, floraMaterial, waterTop, depth, matAt, mat } = args;
+
     const height = floraEnd - floraStart + 1;
     const isKelp = floraMaterial === MATERIAL_KELP;
     const cap = isKelp
@@ -229,9 +275,7 @@ export const updateFloraColumn = (ctx: FloraContext, col: number): FloraColumnRe
     // Grow straight up — only into water, never past the surface headroom.
     const tipY = floraStart - 1;
     if (tipY > waterTop + FLORA_SURFACE_HEADROOM_CELLS - 1 && mat(tipY) === MATERIAL_WATER) {
-        const color = isKelp
-            ? kelpColor(ctx.random)
-            : coralColor(coralHueForColumn(col), ctx.random);
+        const color = isKelp ? kelpColor(ctx.random) : coralColor(coralHueForColumn(col), ctx.random);
         ctx.setCell(col, tipY, color);
         grew.push({ x: col, y: tipY });
     }
