@@ -1,8 +1,10 @@
-# Sand Drop
+# Pour an Ocean
 
 Interactive browser-based sandbox built with React + TypeScript.
-Pour sand and water, build with stone, dig with the eraser, and set off
-charged explosions under a starlit sky — on desktop or on your phone.
+Pour sand, flood it with water, and watch a living seabed take hold — kelp
+forests, coral reefs, fish, squid and octopuses — under a sky that runs a full
+day and night every five minutes. Build with stone, dig with the eraser, and
+set off charged explosions, on desktop or on your phone.
 
 ## Live Demo
 
@@ -13,12 +15,24 @@ charged explosions under a starlit sky — on desktop or on your phone.
 - Canvas-based falling-sand engine — the whole scene renders as a single
   `<canvas>` backed by a typed-array grid, so performance stays flat no matter
   how much sand piles up
-- Four materials, encoded in the grid's alpha byte:
+- Materials encoded in the grid's alpha byte:
   - **Sand** — pours, piles, and avalanches when slopes get too steep
   - **Water** — flows sideways, levels out, and gets displaced when sand sinks
     through it
   - **Stone** — paint solid ledges and shelters; immune to explosions
+  - **Kelp** and **coral** — grow on their own in standing water
   - **Eraser** — dig tunnels and carve terrain
+- A living seabed: flood a deep enough pool and it seeds itself
+  - Kelp rises to its own height, up to 80% of the local depth, so the bed has
+    a ragged silhouette instead of one flat line
+  - Coral builds vibrant pillar clumps — cactus, staghorn and fan silhouettes —
+    capped at a quarter of the depth, over about a quarter of the floor
+  - Neither ever breaks the surface, and both die back when the water drains
+  - Fish, squid, clams and octopuses arrive once there is water to live in, and
+    roam the whole body of it
+  - One large rock outcrop per session, rooted to the bottom, in one of three
+    shapes at a random size
+- A five-minute day: sunrise, an arcing sun, sunset, then a moon and stars
 - Click-and-hold charged explosions with ballistic debris, flash, shockwaves,
   sparks, screen shake — and a charge indicator that gathers energy inward
 - Sand castles are packed sand: they stand firm until a blast crumbles them
@@ -27,7 +41,8 @@ charged explosions under a starlit sky — on desktop or on your phone.
   Web Audio API — no audio files, mutable from the HUD
 - Haptic feedback on mobile (full charge + detonation)
 - Tilt gravity: enable the 📱 toggle on a phone and tip the world sideways
-- Crescent moon, twinkling starfield, and occasional shooting stars
+- Crescent moon and sun that arc overhead, a starfield that fades out by day,
+  and occasional shooting stars
 - Sandbox auto-saves to localStorage and restores on the next visit
 - Share button exports a PNG snapshot (native share sheet on mobile)
 - Installable PWA with offline support (service worker precaches the app)

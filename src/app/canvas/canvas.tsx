@@ -1,6 +1,6 @@
 import React from 'react';
 
-import { BottomBar, TopControls } from './Hud';
+import { TopBar } from './Hud';
 import InstructionOverlay from './InstructionOverlay';
 import { gameAudio } from './audio';
 import { DEFAULT_GRAINS_PER_DROP, MAX_GRAINS_PER_DROP } from './constants';
@@ -8,8 +8,6 @@ import { Brush, SandEngine } from './engine';
 import { clearGrid, loadGrid, loadSettings, saveGrid, saveSettings } from './storage';
 
 const AUTOSAVE_INTERVAL_MS = 20000;
-const BOTTOM_BAR_HIDE_DELAY_MS = 2000;
-const BOTTOM_REVEAL_ZONE_PX = 90;
 
 const tiltSupported = (): boolean =>
     'DeviceOrientationEvent' in window && navigator.maxTouchPoints > 0;
@@ -24,33 +22,10 @@ const Canvas = (): React.JSX.Element => {
     const [grainsPerDrop, setGrainsPerDrop] = React.useState(
         storedSettings?.grains ?? DEFAULT_GRAINS_PER_DROP
     );
-    const [useColoredDrops, setUseColoredDrops] = React.useState(storedSettings?.colored ?? true);
     const [muted, setMuted] = React.useState(storedSettings?.muted ?? false);
     const [brush, setBrush] = React.useState<Brush>('sand');
     const [tiltEnabled, setTiltEnabled] = React.useState(false);
-    const [bottomBarHidden, setBottomBarHidden] = React.useState(false);
-    const barHideTimerRef = React.useRef<number | null>(null);
     const pointerActiveRef = React.useRef(false);
-
-    const scheduleBarHide = React.useCallback((delayMs = BOTTOM_BAR_HIDE_DELAY_MS) => {
-        if (barHideTimerRef.current !== null) window.clearTimeout(barHideTimerRef.current);
-        barHideTimerRef.current = window.setTimeout(() => {
-            barHideTimerRef.current = null;
-            setBottomBarHidden(true);
-        }, delayMs);
-    }, []);
-
-    const revealBottomBar = React.useCallback(() => {
-        setBottomBarHidden(false);
-        scheduleBarHide();
-    }, [scheduleBarHide]);
-
-    React.useEffect(() => {
-        scheduleBarHide(2500);
-        return () => {
-            if (barHideTimerRef.current !== null) window.clearTimeout(barHideTimerRef.current);
-        };
-    }, [scheduleBarHide]);
 
     React.useEffect(() => {
         const canvas = canvasRef.current;
@@ -84,10 +59,6 @@ const Canvas = (): React.JSX.Element => {
     }, [grainsPerDrop]);
 
     React.useEffect(() => {
-        if (engineRef.current) engineRef.current.useColoredDrops = useColoredDrops;
-    }, [useColoredDrops]);
-
-    React.useEffect(() => {
         if (engineRef.current) engineRef.current.brush = brush;
     }, [brush]);
 
@@ -96,8 +67,8 @@ const Canvas = (): React.JSX.Element => {
     }, [muted]);
 
     React.useEffect(() => {
-        saveSettings({ colored: useColoredDrops, grains: grainsPerDrop, muted });
-    }, [useColoredDrops, grainsPerDrop, muted]);
+        saveSettings({ grains: grainsPerDrop, muted });
+    }, [grainsPerDrop, muted]);
 
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -162,10 +133,10 @@ const Canvas = (): React.JSX.Element => {
         if (!engine) return;
         const blob = await engine.exportImage();
         if (!blob) return;
-        const file = new File([blob], 'sand-drop.png', { type: 'image/png' });
+        const file = new File([blob], 'pour-an-ocean.png', { type: 'image/png' });
         try {
             if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                await navigator.share({ files: [file], title: 'Sand Drop' });
+                await navigator.share({ files: [file], title: 'Pour an Ocean' });
                 return;
             }
         } catch {
@@ -174,7 +145,7 @@ const Canvas = (): React.JSX.Element => {
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = 'sand-drop.png';
+        link.download = 'pour-an-ocean.png';
         link.click();
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
@@ -200,11 +171,6 @@ const Canvas = (): React.JSX.Element => {
 
     const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
         engineRef.current?.pointerMoveTo(event.clientX, event.clientY);
-        // Hovering near the bottom edge (while not drawing) reveals the bar.
-        if (!pointerActiveRef.current && event.clientY > window.innerHeight - BOTTOM_REVEAL_ZONE_PX) {
-            if (bottomBarHidden) setBottomBarHidden(false);
-            scheduleBarHide();
-        }
     };
 
     const handlePointerUp = () => {
@@ -223,9 +189,15 @@ const Canvas = (): React.JSX.Element => {
             onContextMenu={(event) => event.preventDefault()}
         >
             <canvas ref={canvasRef} className="sand-canvas" />
-            <TopControls
-                useColoredDrops={useColoredDrops}
-                onToggleColorMode={() => setUseColoredDrops((current) => !current)}
+            <TopBar
+                brush={brush}
+                onBrushChange={setBrush}
+                grainsPerDrop={grainsPerDrop}
+                onGrainsChange={(delta) =>
+                    setGrainsPerDrop((current) =>
+                        Math.max(1, Math.min(current + delta, MAX_GRAINS_PER_DROP))
+                    )
+                }
                 muted={muted}
                 onToggleMute={() => setMuted((current) => !current)}
                 tiltAvailable={tiltSupported()}
@@ -236,21 +208,6 @@ const Canvas = (): React.JSX.Element => {
                 }}
                 onShare={() => void handleShare()}
                 onReset={handleReset}
-            />
-            <BottomBar
-                brush={brush}
-                onBrushChange={(next) => {
-                    setBrush(next);
-                    revealBottomBar();
-                }}
-                grainsPerDrop={grainsPerDrop}
-                onGrainsChange={(delta) => {
-                    setGrainsPerDrop((current) => Math.max(1, Math.min(current + delta, MAX_GRAINS_PER_DROP)));
-                    revealBottomBar();
-                }}
-                hidden={bottomBarHidden}
-                onReveal={revealBottomBar}
-                onKeepVisible={revealBottomBar}
             />
             {!hasStartedDropping && <InstructionOverlay />}
         </div>

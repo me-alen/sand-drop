@@ -1,28 +1,65 @@
 import { gameAudio, vibrate } from './audio';
 import { buildRandomSandCastle } from './castle';
-import { hslToPackedColor, packedColorToCss, withMaterial } from './color';
+import { hslToPackedColor, materialOf, packedColorToCss, withMaterial } from './color';
 import {
+    BUBBLE_RISE_PX_PER_S,
+    BUBBLE_SPAWN_CHANCE,
+    CLAM_HUES,
+    CLAM_OPEN_PERIOD_MS,
     DEFAULT_GRAINS_PER_DROP,
-    DROP_SAND_HUE_STEP,
-    DROP_SAND_LIGHTNESS,
-    DROP_SAND_SATURATION,
+    DIRTY_MARGIN_COLS,
+    DISPLACED_WATER_RISE_CELLS_PER_S,
+    DISPLACED_WATER_SPREAD_CELLS_PER_S,
     ERASE_BRUSH_RADIUS_CELLS,
     EXPLOSION_FULL_CHARGE_MS,
+    FISH_BOB_PX_PER_S,
+    FISH_HUES,
+    FISH_PER_10K_WATER_CELLS,
+    FISH_PIXEL_MAX,
+    FISH_PIXEL_MIN,
+    FISH_RETARGET_MAX_MS,
+    FISH_RETARGET_MIN_MS,
+    FISH_ROAM_RANGE_PX,
+    FISH_SPEED_PX_PER_S_MAX,
+    FISH_SPEED_PX_PER_S_MIN,
+    FISH_TURN_CHANCE_PER_S,
+    FISH_VERTICAL_SPEED_PX_PER_S,
+    FLORA_COLUMNS_PER_TICK,
+    FLORA_TICK_MS,
     GRAVITY_CELLS_PER_S2,
     INITIAL_SAND_BASE_HUE,
     INITIAL_SAND_HEIGHT_RATIO,
+    MATERIAL_KELP,
     MATERIAL_PACKED_SAND,
     MATERIAL_SAND,
     MATERIAL_STONE,
     MATERIAL_WATER,
     MAX_ACTIVE_PARTICLES,
+    MAX_BUBBLES,
+    MAX_CLAMS,
+    MAX_FISH,
+    MAX_OCTOPUS,
+    MAX_SQUID,
     MAX_EXPLOSION_RADIUS_CELLS,
     MAX_FALL_SPEED_CELLS_PER_S,
     MIN_EXPLOSION_RADIUS_CELLS,
+    OCTOPUS_HUES,
+    OCTOPUS_PER_10K_WATER_CELLS,
+    OCTOPUS_PIXEL,
+    OCTOPUS_SPEED_PX_PER_S,
     PURE_SAND_LIGHTNESS,
     PURE_SAND_SATURATION,
+    SAND_IN_WATER_DRIFT_CELLS_PER_S,
+    SAND_IN_WATER_FALL_CELLS_PER_S,
+    SETTLE_SWEEP_COLUMNS_PER_STEP,
     SPAWN_INTERVAL_MS,
     SQUARE_SIZE,
+    SQUID_HUES,
+    SQUID_PER_10K_WATER_CELLS,
+    SQUID_PIXEL_MAX,
+    SQUID_PIXEL_MIN,
+    SQUID_SPEED_PX_PER_S_MAX,
+    SQUID_SPEED_PX_PER_S_MIN,
     STONE_BRUSH_RADIUS_CELLS,
     STONE_HUE,
     STONE_LIGHTNESS,
@@ -34,9 +71,27 @@ import {
     WATER_LEVEL_SCAN_RANGE,
     WATER_LIGHTNESS,
     WATER_MAX_FLOW_HOPS,
-    WATER_SATURATION,
-    WATER_TERMINAL_FALL_CELLS_PER_S
+    WATER_SATURATION
 } from './constants';
+import { FloraContext, isFlora, updateFloraColumn } from './flora';
+import {
+    Clam,
+    clamIsOpen,
+    CLAM_SPRITE_CLOSED,
+    CLAM_SPRITE_OPEN,
+    Octopus,
+    OCTOPUS_SPRITE,
+    spriteFor,
+    spriteHeight,
+    spriteWidth,
+    stepOctopus,
+    stepSwimmer,
+    Swimmer,
+    SwimmerKind,
+    SwimmerTuning
+} from './life';
+import { scatterRocks } from './rocks';
+import { CelestialPosition, drawSky, daylightOf, moonPosition, skyPhase, sunPosition } from './sky';
 import { decodeRle, encodeRle, SavedGrid } from './storage';
 
 const CELL = SQUARE_SIZE;
@@ -74,6 +129,7 @@ type Shockwave = { x: number; y: number; maxRadius: number; bornAt: number; durM
 type Flash = { x: number; y: number; radius: number; bornAt: number; durMs: number };
 type Star = { x: number; y: number; size: number; baseAlpha: number; phase: number; speed: number };
 type ShootingStar = { x: number; y: number; vx: number; vy: number; bornAt: number; lifeMs: number };
+type Bubble = { x: number; y: number; wobblePhase: number; wobbleSpeed: number; radius: number };
 type ChargeState = { cellX: number; cellY: number; startMs: number };
 
 export type Brush = 'sand' | 'water' | 'stone' | 'erase';
@@ -81,7 +137,6 @@ export type PointerAction = 'charge' | 'pour';
 
 export class SandEngine {
     grainsPerDrop = DEFAULT_GRAINS_PER_DROP;
-    useColoredDrops = true;
     brush: Brush = 'sand';
 
     private readonly canvas: HTMLCanvasElement;
@@ -103,7 +158,12 @@ export class SandEngine {
     private flashes: Flash[] = [];
     private stars: Star[] = [];
     private shootingStars: ShootingStar[] = [];
+    private bubbles: Bubble[] = [];
+    private swimmers: Swimmer[] = [];
+    private clams: Clam[] = [];
+    private octopuses: Octopus[] = [];
     private moonCanvas: HTMLCanvasElement | null = null;
+    private sunCanvas: HTMLCanvasElement | null = null;
     private dirtyColumns = new Set<number>();
 
     private charge: ChargeState | null = null;
@@ -123,6 +183,10 @@ export class SandEngine {
     private lastFrameMs: number | null = null;
     private accumulatorMs = 0;
     private disposed = false;
+
+    private lastFloraTickMs = 0;
+    private floraCursor = 0;
+    private settleCursor = 0;
 
     static create(canvas: HTMLCanvasElement): SandEngine | null {
         let ctx: CanvasRenderingContext2D | null = null;
@@ -151,6 +215,7 @@ export class SandEngine {
         this.gridCanvas = gridCanvas;
         this.gridCtx = gridCtx;
         this.buildMoon();
+        this.buildSun();
         this.handleResize();
         this.reset();
     }
@@ -177,6 +242,10 @@ export class SandEngine {
         this.shockwaves = [];
         this.flashes = [];
         this.shootingStars = [];
+        this.bubbles = [];
+        this.swimmers = [];
+        this.clams = [];
+        this.octopuses = [];
         this.dirtyColumns.clear();
         this.charge = null;
         this.chargeReadyFired = false;
@@ -274,13 +343,8 @@ export class SandEngine {
         const snapshotCtx = snapshot.getContext('2d');
         if (!snapshotCtx) return Promise.resolve(null);
 
-        // Keep in sync with the .sand-scene gradient in main.scss.
-        const background = snapshotCtx.createLinearGradient(0, 0, 0, this.cssHeight);
-        background.addColorStop(0, '#04050d');
-        background.addColorStop(0.55, '#0b0e1c');
-        background.addColorStop(1, '#1a1430');
-        snapshotCtx.fillStyle = background;
-        snapshotCtx.fillRect(0, 0, this.cssWidth, this.cssHeight);
+        // The canvas already paints an opaque animated sky as its first layer
+        // (see sky.ts / render), so the snapshot is just the live canvas.
         snapshotCtx.drawImage(this.canvas, 0, 0, this.cssWidth, this.cssHeight);
 
         return new Promise((resolve) => snapshot.toBlob((blob) => resolve(blob), 'image/png'));
@@ -362,7 +426,8 @@ export class SandEngine {
             vibrate(30);
         }
 
-        if (this.shootingStars.length < 2 && Math.random() < dt / 9) {
+        const night = 1 - daylightOf(skyPhase(now));
+        if (this.shootingStars.length < 2 && Math.random() < (dt / 9) * night) {
             this.shootingStars.push({
                 x: this.cssWidth * (0.1 + Math.random() * 0.8),
                 y: this.cssHeight * Math.random() * 0.35,
@@ -374,7 +439,24 @@ export class SandEngine {
         }
         this.shootingStars = this.shootingStars.filter((star) => now - star.bornAt < star.lifeMs);
 
+        // Wake a rotating slice of columns so terrain that settled outside a
+        // dirty window still gets re-checked and can never freeze mid-slump.
+        if (this.cols > 0) {
+            for (let i = 0; i < SETTLE_SWEEP_COLUMNS_PER_STEP; i++) {
+                this.dirtyColumns.add(this.settleCursor);
+                this.settleCursor = (this.settleCursor + 1) % this.cols;
+            }
+        }
+
         this.relaxDirtyColumns();
+
+        if (now - this.lastFloraTickMs >= FLORA_TICK_MS) {
+            this.lastFloraTickMs = now;
+            this.updateFlora(now);
+            this.repopulateLife();
+        }
+
+        this.updateLife(dt, now);
 
         for (let i = this.particles.length - 1; i >= 0; i--) {
             if (!this.moveParticle(this.particles[i], dt)) {
@@ -395,6 +477,25 @@ export class SandEngine {
             spark.y += spark.vy * dt;
         }
 
+        for (let i = this.bubbles.length - 1; i >= 0; i--) {
+            const bubble = this.bubbles[i];
+            bubble.y -= BUBBLE_RISE_PX_PER_S * dt;
+            bubble.x += Math.sin(now * 0.001 * bubble.wobbleSpeed + bubble.wobblePhase) * 12 * dt;
+            // A bubble pops the moment it leaves the water (surface, drain, or solid).
+            const cx = Math.floor(bubble.x / CELL);
+            const cy = Math.floor(bubble.y / CELL);
+            const inWater =
+                cx >= 0 &&
+                cx < this.cols &&
+                cy >= 0 &&
+                cy < this.rows &&
+                materialOf(this.pixels[cy * this.cols + cx]) === MATERIAL_WATER;
+            if (!inWater) {
+                this.bubbles[i] = this.bubbles[this.bubbles.length - 1];
+                this.bubbles.pop();
+            }
+        }
+
         this.shockwaves = this.shockwaves.filter((wave) => now - wave.bornAt < wave.durMs);
         this.flashes = this.flashes.filter((flash) => now - flash.bornAt < flash.durMs);
     }
@@ -411,10 +512,13 @@ export class SandEngine {
 
         p.vx += this.gravityX * dt;
         p.vx *= Math.max(0, 1 - (inWater ? 3 : 0.4) * dt);
+        // Sinking grains wander a little instead of dropping on rails, which
+        // is what spreads a pour into a mound rather than a spike.
+        if (inWater) p.vx += (Math.random() - 0.5) * SAND_IN_WATER_DRIFT_CELLS_PER_S;
         this.moveHorizontally(p, dt, (pixel) => this.blocksSand(pixel));
 
         p.vy = Math.min(p.vy + GRAVITY_CELLS_PER_S2 * dt, MAX_FALL_SPEED_CELLS_PER_S);
-        if (inWater) p.vy = Math.min(p.vy, WATER_TERMINAL_FALL_CELLS_PER_S);
+        if (inWater) p.vy = Math.min(p.vy, SAND_IN_WATER_FALL_CELLS_PER_S);
 
         if (p.vy < 0) {
             this.moveUpwards(p, dt, (pixel) => this.blocksSand(pixel));
@@ -641,8 +745,16 @@ export class SandEngine {
         const displaced = this.pixelAt(cellX, y);
         this.setCell(cellX, y, p.color);
         if (displaced !== 0 && this.particles.length < MAX_ACTIVE_PARTICLES) {
-            // Sand sinks: the water that occupied this cell gets pushed out.
-            this.particles.push(this.makeParticle(cellX + 0.5, y + 0.5, (Math.random() - 0.5) * 6, -6, displaced));
+            // Sand sinks: the water that occupied this cell wells up around it.
+            this.particles.push(
+                this.makeParticle(
+                    cellX + 0.5,
+                    y + 0.5,
+                    (Math.random() - 0.5) * DISPLACED_WATER_SPREAD_CELLS_PER_S,
+                    -DISPLACED_WATER_RISE_CELLS_PER_S,
+                    displaced
+                )
+            );
         }
         this.markDirtyAround(cellX);
     }
@@ -712,7 +824,8 @@ export class SandEngine {
                 const pixel = this.pixels[idx];
                 if (pixel === 0) continue;
                 const material = pixel >>> 24;
-                if (material === MATERIAL_STONE) continue; // stone ledges stay put
+                // Stone ledges and rooted flora stay put instead of falling.
+                if (material === MATERIAL_STONE || isFlora(material)) continue;
 
                 if (this.pixels[idx + this.cols] === 0) {
                     this.clearCell(col, y);
@@ -759,6 +872,12 @@ export class SandEngine {
                 if (topPixel >>> 24 === MATERIAL_SAND) {
                     const leftDrop = col > 0 ? this.surfaceOf(col - 1) - surface : 0;
                     const rightDrop = col < this.cols - 1 ? this.surfaceOf(col + 1) - surface : 0;
+                    // Keep the unstable side awake even when the grain topples
+                    // the other way, so a slope relaxes all the way out instead
+                    // of stalling at the edge of the dirty window.
+                    if (leftDrop > TOPPLE_HEIGHT_DIFF_CELLS) newlyDirty.push(col - 1);
+                    if (rightDrop > TOPPLE_HEIGHT_DIFF_CELLS) newlyDirty.push(col + 1);
+
                     let dir = 0;
                     if (this.gravityX > 25 && rightDrop > 1) dir = 1;
                     else if (this.gravityX < -25 && leftDrop > 1) dir = -1;
@@ -766,8 +885,20 @@ export class SandEngine {
                     else if (rightDrop > TOPPLE_HEIGHT_DIFF_CELLS) dir = 1;
                     if (dir !== 0) {
                         this.clearCell(col, surface);
+                        // Release the grain over the neighbouring column. Sent
+                        // from its own column it simply drops back into the gap
+                        // it just left — too slow sideways to clear the cell
+                        // boundary — so the pile never relaxed and the spike
+                        // stayed put. The neighbour is lower by definition, so
+                        // this cell is always free.
                         this.particles.push(
-                            this.makeParticle(col + 0.5, surface + 0.5, dir * (3 + Math.random() * 3), 0, topPixel)
+                            this.makeParticle(
+                                col + dir + 0.5,
+                                surface + 0.5,
+                                dir * (3 + Math.random() * 3),
+                                0,
+                                topPixel
+                            )
                         );
                         newlyDirty.push(col, col + dir);
                     }
@@ -799,6 +930,318 @@ export class SandEngine {
         return -1;
     }
 
+    // ------------------------------------------------------------------ flora
+
+    // Grows and culls underwater life across a slow rotating sweep of columns,
+    // so kelp/coral appear over seconds and drained reefs die off in kind.
+    private updateFlora(now: number): void {
+        if (this.cols === 0) return;
+        const ctx: FloraContext = {
+            cols: this.cols,
+            rows: this.rows,
+            materialAt: (x, y) => materialOf(this.pixels[y * this.cols + x]),
+            setCell: (x, y, color) => this.setCell(x, y, color),
+            clearCell: (x, y) => this.clearCell(x, y),
+            random: Math.random
+        };
+
+        let deathSparks = 0;
+        const count = Math.min(FLORA_COLUMNS_PER_TICK, this.cols);
+        for (let i = 0; i < count; i++) {
+            const col = this.floraCursor;
+            this.floraCursor = (this.floraCursor + 1) % this.cols;
+
+            const result = updateFloraColumn(ctx, col);
+            if (result.died.length > 0) {
+                this.markDirtyAround(col);
+                for (const dead of result.died) {
+                    if (deathSparks >= 8) break;
+                    deathSparks++;
+                    this.spawnDeathSpark(dead.x, dead.y, dead.material, now);
+                }
+            }
+            if (this.bubbles.length < MAX_BUBBLES && Math.random() < BUBBLE_SPAWN_CHANCE) {
+                this.maybeSpawnBubble(col);
+            }
+        }
+    }
+
+    private maybeSpawnBubble(col: number): void {
+        // Vent from the water just above a reef tip, so bubbles rise to the surface.
+        let waterTop = -1;
+        let tipY = -1;
+        for (let y = 0; y < this.rows; y++) {
+            const m = materialOf(this.pixels[y * this.cols + col]);
+            if (m === 0) continue;
+            if (m === MATERIAL_WATER) {
+                if (waterTop === -1) waterTop = y;
+                continue;
+            }
+            if (isFlora(m)) tipY = y;
+            break;
+        }
+        if (tipY === -1 || waterTop === -1 || tipY - 1 < waterTop) return;
+
+        const spawnRow = tipY - 1 - Math.floor(Math.random() * Math.max(1, tipY - waterTop));
+        this.bubbles.push({
+            x: (col + 0.5) * CELL,
+            y: (spawnRow + 0.5) * CELL,
+            wobblePhase: Math.random() * TWO_PI,
+            wobbleSpeed: 3 + Math.random() * 3,
+            radius: 1 + Math.random() * 1.5
+        });
+    }
+
+    private spawnDeathSpark(cellX: number, cellY: number, material: number, now: number): void {
+        const hue = material === MATERIAL_KELP ? 130 : 340;
+        const angle = Math.random() * TWO_PI;
+        const speed = 20 + Math.random() * 40;
+        this.sparks.push({
+            x: (cellX + 0.5) * CELL,
+            y: (cellY + 0.5) * CELL,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed - 20,
+            bornAt: now,
+            lifeMs: 200 + Math.random() * 200,
+            hue
+        });
+    }
+
+    // ------------------------------------------------------------------- life
+
+    private isWaterAtPx = (px: number, py: number): boolean => {
+        const cx = Math.floor(px / CELL);
+        const cy = Math.floor(py / CELL);
+        if (cx < 0 || cx >= this.cols || cy < 0 || cy >= this.rows) return false;
+        return materialOf(this.pixels[cy * this.cols + cx]) === MATERIAL_WATER;
+    };
+
+    private static readonly swimmerTuning: SwimmerTuning = {
+        turnChancePerSecond: FISH_TURN_CHANCE_PER_S,
+        bobSpeed: FISH_BOB_PX_PER_S,
+        verticalSpeed: FISH_VERTICAL_SPEED_PX_PER_S,
+        roamRange: FISH_ROAM_RANGE_PX,
+        retargetMinMs: FISH_RETARGET_MIN_MS,
+        retargetMaxMs: FISH_RETARGET_MAX_MS
+    };
+
+    private updateLife(dt: number, now: number): void {
+        for (let i = this.swimmers.length - 1; i >= 0; i--) {
+            const alive = stepSwimmer(
+                this.swimmers[i],
+                dt,
+                now,
+                this.isWaterAtPx,
+                Math.random,
+                SandEngine.swimmerTuning
+            );
+            if (!alive) {
+                this.swimmers[i] = this.swimmers[this.swimmers.length - 1];
+                this.swimmers.pop();
+            }
+        }
+
+        for (let i = this.octopuses.length - 1; i >= 0; i--) {
+            if (!stepOctopus(this.octopuses[i], dt, this.isWaterAtPx, OCTOPUS_SPEED_PX_PER_S)) {
+                this.octopuses[i] = this.octopuses[this.octopuses.length - 1];
+                this.octopuses.pop();
+            }
+        }
+
+        this.clams = this.clams.filter((clam) => this.clamStillSubmerged(clam));
+    }
+
+    // A clam only keeps its spot while it is sitting on the bed under water.
+    private clamStillSubmerged(clam: Clam): boolean {
+        const surface = this.surfaceOf(clam.col);
+        if (surface >= this.rows || surface <= 0 || Math.abs(surface - clam.y) > 1) return false;
+        clam.y = surface;
+        return materialOf(this.pixelAt(clam.col, surface - 1)) === MATERIAL_WATER;
+    }
+
+    // Keeps the population in step with how much water there is to live in.
+    private repopulateLife(): void {
+        if (this.cols === 0) return;
+        let sampledWater = 0;
+        for (let i = 0; i < this.pixels.length; i += 4) {
+            if (materialOf(this.pixels[i]) === MATERIAL_WATER) sampledWater++;
+        }
+        const waterCells = sampledWater * 4;
+
+        const countOf = (kind: SwimmerKind): number =>
+            this.swimmers.reduce((total, swimmer) => total + (swimmer.kind === kind ? 1 : 0), 0);
+
+        const targetFish = Math.min(
+            MAX_FISH,
+            Math.floor((waterCells / 10000) * FISH_PER_10K_WATER_CELLS)
+        );
+        while (countOf('fish') < targetFish && this.spawnSwimmer('fish')) {
+            /* keep stocking until the water is full or no spot is found */
+        }
+
+        const targetSquid = Math.min(
+            MAX_SQUID,
+            Math.floor((waterCells / 10000) * SQUID_PER_10K_WATER_CELLS)
+        );
+        while (countOf('squid') < targetSquid && this.spawnSwimmer('squid')) {
+            /* squid drift alongside the schools */
+        }
+
+        const targetClams = Math.min(MAX_CLAMS, Math.floor(waterCells / 2200));
+        while (this.clams.length < targetClams && this.spawnClam()) {
+            /* same, for the bed */
+        }
+
+        const targetOctopuses = Math.min(
+            MAX_OCTOPUS,
+            Math.floor((waterCells / 10000) * OCTOPUS_PER_10K_WATER_CELLS)
+        );
+        while (this.octopuses.length < targetOctopuses && this.spawnOctopus()) {
+            /* and a few crawlers on the bed */
+        }
+    }
+
+    private spawnSwimmer(kind: SwimmerKind): boolean {
+        const squid = kind === 'squid';
+        for (let attempt = 0; attempt < 24; attempt++) {
+            const cx = Math.floor(Math.random() * this.cols);
+            const cy = Math.floor(Math.random() * this.rows);
+            if (materialOf(this.pixels[cy * this.cols + cx]) !== MATERIAL_WATER) continue;
+            const minSpeed = squid ? SQUID_SPEED_PX_PER_S_MIN : FISH_SPEED_PX_PER_S_MIN;
+            const maxSpeed = squid ? SQUID_SPEED_PX_PER_S_MAX : FISH_SPEED_PX_PER_S_MAX;
+            const minPixel = squid ? SQUID_PIXEL_MIN : FISH_PIXEL_MIN;
+            const maxPixel = squid ? SQUID_PIXEL_MAX : FISH_PIXEL_MAX;
+            const hues = squid ? SQUID_HUES : FISH_HUES;
+            this.swimmers.push({
+                kind,
+                x: (cx + 0.5) * CELL,
+                y: (cy + 0.5) * CELL,
+                dir: Math.random() < 0.5 ? -1 : 1,
+                speed: minSpeed + Math.random() * (maxSpeed - minSpeed),
+                pixel: minPixel + Math.random() * (maxPixel - minPixel),
+                hue: hues[Math.floor(Math.random() * hues.length)],
+                bobPhase: Math.random() * TWO_PI,
+                targetY: (cy + 0.5) * CELL,
+                retargetAt: 0
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private spawnClam(): boolean {
+        for (let attempt = 0; attempt < 24; attempt++) {
+            const col = Math.floor(Math.random() * this.cols);
+            if (this.clams.some((clam) => Math.abs(clam.col - col) < 4)) continue;
+            const surface = this.surfaceOf(col);
+            if (surface <= 0 || surface >= this.rows) continue;
+            if (materialOf(this.pixelAt(col, surface - 1)) !== MATERIAL_WATER) continue;
+            this.clams.push({
+                col,
+                y: surface,
+                hue: CLAM_HUES[Math.floor(Math.random() * CLAM_HUES.length)],
+                phase: Math.random() * CLAM_OPEN_PERIOD_MS
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private spawnOctopus(): boolean {
+        for (let attempt = 0; attempt < 30; attempt++) {
+            const col = Math.floor(Math.random() * this.cols);
+            if (this.octopuses.some((other) => Math.abs(other.x / CELL - col) < 12)) continue;
+            const surface = this.surfaceOf(col);
+            if (surface <= 2 || surface >= this.rows) continue;
+            // Settle just off the bed, where there is room to hover.
+            const row = surface - 2;
+            if (materialOf(this.pixelAt(col, row)) !== MATERIAL_WATER) continue;
+            this.octopuses.push({
+                x: (col + 0.5) * CELL,
+                y: (row + 0.5) * CELL,
+                dir: Math.random() < 0.5 ? -1 : 1,
+                hue: OCTOPUS_HUES[Math.floor(Math.random() * OCTOPUS_HUES.length)],
+                phase: Math.random() * TWO_PI
+            });
+            return true;
+        }
+        return false;
+    }
+
+    // Paints a pixel-mask sprite centred on (x, y) so creatures match the
+    // chunky look of the grid.
+    private drawSprite(
+        sprite: string[],
+        x: number,
+        y: number,
+        pixel: number,
+        flip: boolean,
+        body: string,
+        eye: string
+    ): void {
+        const ctx = this.ctx;
+        const w = spriteWidth(sprite);
+        const h = spriteHeight(sprite);
+        const left = x - (w * pixel) / 2;
+        const top = y - (h * pixel) / 2;
+        const size = Math.ceil(pixel);
+        for (let row = 0; row < h; row++) {
+            for (let col = 0; col < w; col++) {
+                const cell = sprite[row][flip ? w - 1 - col : col];
+                if (cell === '.') continue;
+                ctx.fillStyle = cell === 'e' ? eye : cell === 'o' ? 'rgba(255,246,228,0.9)' : body;
+                ctx.fillRect(Math.round(left + col * pixel), Math.round(top + row * pixel), size, size);
+            }
+        }
+    }
+
+    private renderLife(now: number): void {
+        const ctx = this.ctx;
+        const eye = 'rgba(18,22,38,0.9)';
+
+        for (const clam of this.clams) {
+            const sprite = clamIsOpen(clam, now, CLAM_OPEN_PERIOD_MS)
+                ? CLAM_SPRITE_OPEN
+                : CLAM_SPRITE_CLOSED;
+            const pixel = 2;
+            const cx = (clam.col + 0.5) * CELL;
+            const cy = clam.y * CELL - (spriteHeight(sprite) * pixel) / 2;
+            this.drawSprite(sprite, cx, cy, pixel, false, `hsl(${clam.hue},52%,70%)`, eye);
+        }
+
+        for (const octopus of this.octopuses) {
+            const pixel = OCTOPUS_PIXEL;
+            const body = `hsl(${octopus.hue},58%,62%)`;
+            this.drawSprite(OCTOPUS_SPRITE, octopus.x, octopus.y, pixel, octopus.dir === -1, body, eye);
+            // Tentacles trail below the head and curl as it drifts.
+            ctx.fillStyle = body;
+            const headBottom = octopus.y + (spriteHeight(OCTOPUS_SPRITE) * pixel) / 2;
+            for (let arm = 0; arm < 4; arm++) {
+                for (let seg = 0; seg < 4; seg++) {
+                    const sway = Math.sin(now * 0.004 + octopus.phase + arm + seg * 0.7) * pixel * 0.9;
+                    ctx.fillRect(
+                        Math.round(octopus.x + (arm - 1.5) * pixel * 2 + sway),
+                        Math.round(headBottom + seg * pixel),
+                        pixel,
+                        pixel
+                    );
+                }
+            }
+        }
+
+        for (const swimmer of this.swimmers) {
+            this.drawSprite(
+                spriteFor(swimmer.kind),
+                swimmer.x,
+                swimmer.y,
+                swimmer.pixel,
+                swimmer.dir === -1,
+                `hsl(${swimmer.hue},76%,58%)`,
+                eye
+            );
+        }
+    }
+
     // ---------------------------------------------------------------- brushes
 
     private applyBrush(cssX: number, cssY: number): void {
@@ -819,10 +1262,6 @@ export class SandEngine {
     }
 
     private spawnGrains(cssX: number, cssY: number, kind: 'sand' | 'water'): void {
-        // All grains of one burst share a hue so deposits stay chromatically
-        // coherent even when settling shuffles them (e.g. sinking in water).
-        const burstHue = kind === 'sand' && this.useColoredDrops ? this.hue : null;
-
         for (let i = 0; i < this.grainsPerDrop; i++) {
             if (this.particles.length >= MAX_ACTIVE_PARTICLES) break;
             const cellX = this.clampCol(Math.floor(cssX / CELL) + Math.round((Math.random() - 0.5) * 4));
@@ -835,24 +1274,8 @@ export class SandEngine {
             while (tries-- > 0 && cellY > 0 && blocked(this.pixelAt(cellX, cellY))) cellY--;
             if (blocked(this.pixelAt(cellX, cellY))) continue;
 
-            let color: number;
-            if (kind === 'water') {
-                color = this.waterColor();
-            } else if (burstHue !== null) {
-                color = hslToPackedColor(
-                    burstHue + (Math.random() * 4 - 2),
-                    DROP_SAND_SATURATION,
-                    DROP_SAND_LIGHTNESS + (Math.random() * 6 - 3),
-                    MATERIAL_SAND
-                );
-            } else {
-                color = this.pureSandColor();
-            }
+            const color = kind === 'water' ? this.waterColor() : this.pureSandColor();
             this.particles.push(this.makeParticle(cellX + 0.5, cellY + 0.5, (Math.random() - 0.5) * 3, 0, color));
-        }
-
-        if (burstHue !== null) {
-            this.hue = (burstHue + DROP_SAND_HUE_STEP) % 360;
         }
     }
 
@@ -919,6 +1342,11 @@ export class SandEngine {
                 if (pixel === 0) continue;
                 const material = pixel >>> 24;
                 if (material === MATERIAL_STONE) continue; // stone shrugs off blasts
+                if (isFlora(material)) {
+                    // Flora vaporizes; a flying stalk would re-anchor mid-air.
+                    this.clearCell(x, y);
+                    continue;
+                }
 
                 this.clearCell(x, y);
                 // Packed castle sand crumbles into loose sand when blasted.
@@ -1015,6 +1443,14 @@ export class SandEngine {
                 this.setCell(x, this.rows - 1 - depth, this.pureSandColor());
             }
         }
+
+        scatterRocks({
+            cols: this.cols,
+            rows: this.rows,
+            surfaceAt: (x) => this.surfaceOf(x),
+            setCell: (x, y, color) => this.setCell(x, y, color),
+            random: Math.random
+        });
     }
 
     private buildCastle(): void {
@@ -1037,7 +1473,12 @@ export class SandEngine {
 
     private render(now: number): void {
         const ctx = this.ctx;
-        ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
+        const phase = skyPhase(now);
+        const night = 1 - daylightOf(phase);
+
+        // The sky fills the whole canvas opaquely; drawn outside the shake
+        // transform so screen-shake never smears empty edges into view.
+        drawSky(ctx, phase, this.cssWidth, this.cssHeight);
 
         let shakeX = 0;
         let shakeY = 0;
@@ -1050,11 +1491,10 @@ export class SandEngine {
         ctx.save();
         ctx.translate(shakeX, shakeY);
 
-        this.renderStars(now);
-        if (this.moonCanvas) {
-            ctx.drawImage(this.moonCanvas, this.cssWidth * 0.16 - 90, this.cssHeight * 0.14 - 90);
-        }
-        this.renderShootingStars(now);
+        this.renderStars(now, night);
+        this.renderCelestialBody(this.sunCanvas, sunPosition(phase));
+        this.renderCelestialBody(this.moonCanvas, moonPosition(phase));
+        this.renderShootingStars(now, night);
 
         if (this.gridImage) {
             if (this.gridDirty) {
@@ -1070,9 +1510,20 @@ export class SandEngine {
             ctx.fillRect(Math.floor(p.x) * CELL, Math.floor(p.y) * CELL, CELL, CELL);
         }
 
+        this.renderLife(now);
+        this.renderBubbles();
         this.renderChargeIndicator(now);
         this.renderEffects(now);
 
+        ctx.restore();
+    }
+
+    private renderCelestialBody(sprite: HTMLCanvasElement | null, pos: CelestialPosition | null): void {
+        if (!sprite || !pos) return;
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.globalAlpha = pos.alpha;
+        ctx.drawImage(sprite, pos.x01 * this.cssWidth - sprite.width / 2, pos.y01 * this.cssHeight - sprite.height / 2);
         ctx.restore();
     }
 
@@ -1111,6 +1562,55 @@ export class SandEngine {
         this.moonCanvas = moon;
     }
 
+    private buildSun(): void {
+        const size = 180;
+        const radius = 30;
+        const sun = document.createElement('canvas');
+        sun.width = size;
+        sun.height = size;
+        const g = sun.getContext('2d');
+        if (!g) {
+            this.sunCanvas = null;
+            return;
+        }
+        const cx = size / 2;
+        const cy = size / 2;
+
+        // Warm disc first, then a soft radial glow slipped underneath.
+        g.fillStyle = 'rgba(255,236,180,0.98)';
+        g.beginPath();
+        g.arc(cx, cy, radius, 0, TWO_PI);
+        g.fill();
+
+        g.globalCompositeOperation = 'destination-over';
+        const glow = g.createRadialGradient(cx, cy, radius * 0.5, cx, cy, size / 2);
+        glow.addColorStop(0, 'rgba(255,224,150,0.35)');
+        glow.addColorStop(0.5, 'rgba(255,196,110,0.12)');
+        glow.addColorStop(1, 'rgba(255,196,110,0)');
+        g.fillStyle = glow;
+        g.fillRect(0, 0, size, size);
+
+        this.sunCanvas = sun;
+    }
+
+    private renderBubbles(): void {
+        if (this.bubbles.length === 0) return;
+        const ctx = this.ctx;
+        ctx.save();
+        for (const bubble of this.bubbles) {
+            ctx.strokeStyle = 'rgba(220,240,255,0.35)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(bubble.x, bubble.y, bubble.radius, 0, TWO_PI);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.beginPath();
+            ctx.arc(bubble.x - bubble.radius * 0.3, bubble.y - bubble.radius * 0.3, 0.6, 0, TWO_PI);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
     private regenerateStars(): void {
         const count = Math.round((this.cssWidth * this.cssHeight) / 9000);
         this.stars = [];
@@ -1126,19 +1626,21 @@ export class SandEngine {
         }
     }
 
-    private renderStars(now: number): void {
+    private renderStars(now: number, night: number): void {
+        if (night < 0.03) return; // washed out by daylight
         const ctx = this.ctx;
         ctx.save();
         ctx.fillStyle = 'rgb(205,218,255)';
         for (const star of this.stars) {
-            ctx.globalAlpha = star.baseAlpha * (0.55 + 0.45 * Math.sin(now * 0.001 * star.speed + star.phase));
+            const twinkle = star.baseAlpha * (0.55 + 0.45 * Math.sin(now * 0.001 * star.speed + star.phase));
+            ctx.globalAlpha = twinkle * night;
             ctx.fillRect(star.x, star.y, star.size, star.size);
         }
         ctx.restore();
     }
 
-    private renderShootingStars(now: number): void {
-        if (this.shootingStars.length === 0) return;
+    private renderShootingStars(now: number, night: number): void {
+        if (this.shootingStars.length === 0 || night < 0.03) return;
         const ctx = this.ctx;
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
@@ -1146,7 +1648,7 @@ export class SandEngine {
         ctx.lineCap = 'round';
         for (const star of this.shootingStars) {
             const t = Math.min((now - star.bornAt) / star.lifeMs, 1);
-            const alpha = Math.sin(t * Math.PI) * 0.9;
+            const alpha = Math.sin(t * Math.PI) * 0.9 * night;
             const elapsedS = (now - star.bornAt) / 1000;
             const x = star.x + star.vx * elapsedS;
             const y = star.y + star.vy * elapsedS;
@@ -1291,8 +1793,12 @@ export class SandEngine {
         this.gridDirty = true;
     }
 
+    // Relaxation only ever visits dirty columns, so this window has to be wide
+    // enough to catch the imbalance a landing grain creates. At ±1 a step that
+    // formed just outside it was never re-examined and froze into a permanent
+    // spike, which no amount of settling time would smooth out.
     private markDirtyAround(col: number): void {
-        for (let x = col - 1; x <= col + 1; x++) {
+        for (let x = col - DIRTY_MARGIN_COLS; x <= col + DIRTY_MARGIN_COLS; x++) {
             if (x >= 0 && x < this.cols) this.dirtyColumns.add(x);
         }
     }

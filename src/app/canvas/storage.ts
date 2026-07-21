@@ -9,13 +9,24 @@ export type SavedGrid = {
 };
 
 export type SavedSettings = {
-    colored: boolean;
     grains: number;
     muted: boolean;
 };
 
-const GRID_KEY = 'sand-drop/grid';
-const SETTINGS_KEY = 'sand-drop/settings';
+const GRID_KEY = 'pour-an-ocean/grid';
+const SETTINGS_KEY = 'pour-an-ocean/settings';
+// Keys used before the project was renamed. Read once so an existing sandbox
+// survives the rename instead of coming back empty.
+const LEGACY_GRID_KEY = 'sand-drop/grid';
+const LEGACY_SETTINGS_KEY = 'sand-drop/settings';
+
+const readWithFallback = (key: string, legacyKey: string): string | null => {
+    try {
+        return window.localStorage.getItem(key) ?? window.localStorage.getItem(legacyKey);
+    } catch {
+        return null;
+    }
+};
 
 export const encodeRle = (data: Uint32Array): string => {
     const runs: number[] = [];
@@ -70,7 +81,7 @@ export const saveGrid = (data: SavedGrid): void => {
 
 export const loadGrid = (): SavedGrid | null => {
     try {
-        const raw = window.localStorage.getItem(GRID_KEY);
+        const raw = readWithFallback(GRID_KEY, LEGACY_GRID_KEY);
         if (!raw) return null;
         const parsed = JSON.parse(raw) as SavedGrid;
         if (
@@ -92,6 +103,7 @@ export const loadGrid = (): SavedGrid | null => {
 export const clearGrid = (): void => {
     try {
         window.localStorage.removeItem(GRID_KEY);
+        window.localStorage.removeItem(LEGACY_GRID_KEY);
     } catch {
         // ignore
     }
@@ -107,14 +119,12 @@ export const saveSettings = (settings: SavedSettings): void => {
 
 export const loadSettings = (): SavedSettings | null => {
     try {
-        const raw = window.localStorage.getItem(SETTINGS_KEY);
+        const raw = readWithFallback(SETTINGS_KEY, LEGACY_SETTINGS_KEY);
         if (!raw) return null;
         const parsed = JSON.parse(raw) as SavedSettings;
-        if (
-            typeof parsed.colored !== 'boolean' ||
-            typeof parsed.grains !== 'number' ||
-            typeof parsed.muted !== 'boolean'
-        ) {
+        // Only the fields still in use are checked, so blobs saved before the
+        // colour toggle was dropped still load (the stale key is ignored).
+        if (typeof parsed.grains !== 'number' || typeof parsed.muted !== 'boolean') {
             return null;
         }
         return parsed;

@@ -11,6 +11,7 @@ body {
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
+    // Static night fallback; the live animated sky is painted on the canvas (see sky.ts).
     background: linear-gradient(180deg, #04050d 0%, #0b0e1c 55%, #1a1430 100%);
     touch-action: none;
     user-select: none;
@@ -35,15 +36,24 @@ body {
     gap: 0.5rem;
 }
 
+// One bar across the top: tools on the left, utilities on the right. It wraps
+// on narrow screens so the brushes stay reachable on a phone.
 .hud--top {
     top: 1rem;
+    left: 1rem;
     right: 1rem;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.5rem;
 }
 
-.hud--bottom {
-    bottom: 1.15rem;
-    left: 50%;
-    transform: translate(-50%, 0);
+.hud-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.hud-group--tools {
     gap: 0.4rem;
     padding: 0.25rem 0.4rem;
     background: rgba(10, 12, 24, 0.55);
@@ -51,52 +61,6 @@ body {
     border-radius: 999px;
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
-    opacity: 1;
-    transition: opacity 0.25s ease, transform 0.25s ease;
-}
-
-.hud--bottom-hidden {
-    opacity: 0;
-    transform: translate(-50%, 150%);
-    pointer-events: none;
-}
-
-// Slim reveal handle shown while the bottom bar is hidden.
-.hud-handle {
-    position: absolute;
-    bottom: 0.4rem;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.4rem;
-    height: 1.2rem;
-    padding: 0;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    opacity: 0.85;
-    transition: opacity 0.25s ease;
-}
-
-.hud-handle::after {
-    content: '';
-    width: 2.6rem;
-    height: 0.3rem;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.35);
-    transition: background-color 0.15s ease;
-}
-
-.hud-handle:hover::after {
-    background: rgba(255, 255, 255, 0.65);
-}
-
-.hud-handle--hidden {
-    opacity: 0;
-    pointer-events: none;
 }
 
 .hud-button {
@@ -122,14 +86,14 @@ body {
     border-color: rgba(255, 255, 255, 0.32);
 }
 
-.hud--bottom .hud-button {
+.hud-group--tools .hud-button {
     background: transparent;
     border-color: transparent;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }
 
-.hud--bottom .hud-button:hover {
+.hud-group--tools .hud-button:hover {
     background: rgba(255, 255, 255, 0.12);
 }
 
@@ -210,20 +174,6 @@ body {
     height: 1.4rem;
     margin: 0 0.2rem;
     background: rgba(255, 255, 255, 0.18);
-}
-
-.mode-dot {
-    width: 0.7rem;
-    height: 0.7rem;
-    border-radius: 50%;
-}
-
-.mode-dot--rainbow {
-    background: conic-gradient(#ff5757, #ffb257, #f5ff57, #6bff57, #57e9ff, #7a57ff, #ff57d8, #ff5757);
-}
-
-.mode-dot--sand {
-    background: hsl(40, 58%, 66%);
 }
 
 .grain-count {
