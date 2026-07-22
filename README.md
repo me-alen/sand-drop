@@ -8,7 +8,7 @@ set off charged explosions, on desktop or on your phone.
 
 ## Live Demo
 
-- [sand-drop.vercel.app](https://sand-drop.vercel.app)
+- [pour-an-ocean.vercel.app](https://pour-an-ocean.vercel.app)
 
 ## Features
 
@@ -61,9 +61,8 @@ set off charged explosions, on desktop or on your phone.
 - **Hold on solid ground** (sand brush): charge an explosion, release to
   detonate — longer hold, bigger blast
 - **Arrow Up / Down** or the **− / + pill**: change grains per drop
-- **Bottom bar**: pick the material brush
-- **Top-right**: color mode, mute, tilt gravity (touch devices), share
-  snapshot, reset
+- **Top-left**: pick the material brush and the grains-per-drop count
+- **Top-right**: mute, tilt gravity (touch devices), share snapshot, reset
 
 ## Tech Stack
 
@@ -86,6 +85,10 @@ src/
     color.ts                # HSL -> packed RGBA helpers; material byte utilities
     constants.ts            # Simulation/config constants
     castle.ts               # Castle generation logic
+    sky.ts                  # Day/night phase, sky gradient, sun and moon arcs
+    flora.ts                # Kelp and coral: seeding, growth caps, die-back
+    rocks.ts                # The seabed's rock outcrop
+    life.ts                 # Aquatic species: habitats, sprites, movement
     Hud.tsx                 # Material picker, counters, toggles
     InstructionOverlay.tsx  # On-screen instruction UI
   service-worker.ts         # Workbox service worker (offline/PWA)
@@ -128,4 +131,4 @@ npm run build
 
 Current homepage setting in `package.json` points to:
 
-- `https://sand-drop.vercel.app`
+- `https://pour-an-ocean.vercel.app`
