@@ -44,7 +44,7 @@ export const ERASE_BRUSH_RADIUS_CELLS = 3.2;
 // A column of loose sand topples once it stands more than this many cells
 // above a neighbouring column, so this sets the angle of repose. At 1 a pile
 // holds a ~45° face; at 2 it held ~63°, which piled pours into unnaturally
-// sharp spikes. Submerged pours are softened further by the sink drift below.
+// sharp spikes.
 export const TOPPLE_HEIGHT_DIFF_CELLS = 1;
 // How far either side of a change the relaxation pass is woken up. Too narrow
 // and a freshly formed step falls outside the window and never settles.
@@ -54,14 +54,18 @@ export const DIRTY_MARGIN_COLS = 2;
 // each step guarantees every column eventually settles. A full pass takes
 // well under a second and costs a handful of column scans per frame.
 export const SETTLE_SWEEP_COLUMNS_PER_STEP = 6;
+// Grains a single over-steep column may shed in one relaxation pass. One per
+// pass loses the race against a steady pour, so the pile climbs into a spike
+// while sand is still falling; letting it avalanche keeps the slope honest.
+export const MAX_TOPPLE_SLIDES_PER_PASS = 6;
+// Columns a landing grain may roll down before it comes to rest. Applying the
+// angle of repose as sand lands is what stops a pour building a spire in the
+// first place; the relax pass alone cannot demolish one fast enough.
+export const MAX_SETTLE_ROLLS = 8;
 
-// Sinking through water is slow and wandering rather than a straight drop.
-export const SAND_IN_WATER_FALL_CELLS_PER_S = 16;
-export const SAND_IN_WATER_DRIFT_CELLS_PER_S = 2.4;
-// Water shouldered aside by a landing grain wells up gently; a hard shove
-// looked like a jet firing out of the pile.
-export const DISPLACED_WATER_RISE_CELLS_PER_S = 2;
-export const DISPLACED_WATER_SPREAD_CELLS_PER_S = 1.6;
+// Water slows a sinking grain, but it still drops straight and simply settles
+// on the bed. No drift or flourish — the pour should look calm, not animated.
+export const SAND_IN_WATER_FALL_CELLS_PER_S = 40;
 
 // Fraction of vertical gravity applied sideways at full device tilt.
 export const TILT_MAX_GRAVITY_RATIO = 0.55;
@@ -149,45 +153,25 @@ export const ROCK_LIGHTNESS_MIN = 26;
 export const ROCK_LIGHTNESS_MAX = 46;
 
 // ------------------------------------------------------------ aquatic life
-// Fish, clams and the octopus are render-layer creatures like bubbles, not
-// grid cells, so they drift freely without disturbing sand or water physics.
-export const FISH_PER_10K_WATER_CELLS = 17;
-export const MAX_FISH = 60;
-export const FISH_SPEED_PX_PER_S_MIN = 16;
-export const FISH_SPEED_PX_PER_S_MAX = 42;
-export const FISH_PIXEL_MIN = 1.5;
-export const FISH_PIXEL_MAX = 3;
-// Warm tropical-reef colours, kept off the kelp greens.
-export const FISH_HUES = [28, 45, 5, 200, 320, 260];
-// Low enough that a swimmer crosses open water instead of pacing a short beat.
-export const FISH_TURN_CHANCE_PER_S = 0.05;
-export const FISH_BOB_PX_PER_S = 7;
+// Fish, sharks, whales, crabs and the rest are render-layer creatures like
+// bubbles, not grid cells, so they move freely without disturbing sand or
+// water physics. Which species appear, how many, and what they look like all
+// live in the HABITATS and LOOKS tables in life.ts — a species only shows up
+// once the ocean is big and deep enough for it.
+//
+// These govern how every swimmer moves, whatever species it is.
+export const SWIMMER_TURN_CHANCE_PER_S = 0.05;
+export const SWIMMER_BOB_PX_PER_S = 7;
 // Swimmers pick a new depth every few seconds and glide to it, so over time
 // they range across the whole water column rather than holding one line.
-export const FISH_VERTICAL_SPEED_PX_PER_S = 18;
-export const FISH_ROAM_RANGE_PX = 320;
+export const SWIMMER_VERTICAL_SPEED_PX_PER_S = 18;
+export const SWIMMER_ROAM_RANGE_PX = 320;
 // Only a fallback for depths that turn out to be unreachable — normally a
 // swimmer re-aims the moment it arrives.
-export const FISH_RETARGET_MIN_MS = 4000;
-export const FISH_RETARGET_MAX_MS = 11000;
+export const SWIMMER_RETARGET_MIN_MS = 4000;
+export const SWIMMER_RETARGET_MAX_MS = 11000;
 
-export const SQUID_PER_10K_WATER_CELLS = 3;
-export const MAX_SQUID = 10;
-export const SQUID_SPEED_PX_PER_S_MIN = 11;
-export const SQUID_SPEED_PX_PER_S_MAX = 24;
-export const SQUID_PIXEL_MIN = 2;
-export const SQUID_PIXEL_MAX = 3.2;
-export const SQUID_HUES = [268, 315, 190, 12];
-
-export const MAX_CLAMS = 14;
 export const CLAM_OPEN_PERIOD_MS = 5200;
-export const CLAM_HUES = [300, 30, 195];
-
-export const MAX_OCTOPUS = 3;
-export const OCTOPUS_PER_10K_WATER_CELLS = 1;
-export const OCTOPUS_PIXEL = 3;
-export const OCTOPUS_SPEED_PX_PER_S = 11;
-export const OCTOPUS_HUES = [288, 12, 330];
 
 // Bubbles rising off the reef are a render effect, not grid cells.
 export const MAX_BUBBLES = 120;

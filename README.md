@@ -28,8 +28,14 @@ set off charged explosions, on desktop or on your phone.
   - Coral builds vibrant pillar clumps — cactus, staghorn and fan silhouettes —
     capped at a quarter of the depth, over about a quarter of the floor
   - Neither ever breaks the surface, and both die back when the water drains
-  - Fish, squid, clams and octopuses arrive once there is water to live in, and
-    roam the whole body of it
+  - Ten species, each with its own habitat: a creature only appears once the
+    ocean is wide and deep enough for it, and leaves again if you drain it.
+    Fish, clams, starfish and crabs turn up in a puddle; squid and octopuses
+    want a proper pool; jellyfish and turtles need real depth; sharks want a
+    third of the scene under water; a whale will only show up once more than
+    half of it is deep ocean
+  - Everything that swims roams the whole body of water rather than pacing
+    one spot
   - One large rock outcrop per session, rooted to the bottom, in one of three
     shapes at a random size
 - A five-minute day: sunrise, an arcing sun, sunset, then a moon and stars

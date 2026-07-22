@@ -1,20 +1,46 @@
 import {
-    Clam,
+    BedDweller,
     clamIsOpen,
     CLAM_SPRITE_CLOSED,
     CLAM_SPRITE_OPEN,
+    CRAB_SPRITE,
+    Crawler,
+    CreatureKind,
     FISH_SPRITE,
-    Octopus,
+    HABITATS,
+    habitatSuits,
+    JELLYFISH_SPRITE,
+    LOOKS,
     OCTOPUS_SPRITE,
-    SQUID_SPRITE,
+    SHARK_SPRITE,
     spriteFor,
     spriteHeight,
     spriteWidth,
-    stepOctopus,
+    SQUID_SPRITE,
+    STARFISH_SPRITE,
+    stepCrawler,
     stepSwimmer,
     Swimmer,
-    SwimmerTuning
+    SwimmerTuning,
+    targetPopulation,
+    TURTLE_SPRITE,
+    WaterStats,
+    WHALE_SPRITE
 } from './life';
+
+const ALL_SPRITES = [
+    FISH_SPRITE,
+    SQUID_SPRITE,
+    SHARK_SPRITE,
+    WHALE_SPRITE,
+    TURTLE_SPRITE,
+    JELLYFISH_SPRITE,
+    STARFISH_SPRITE,
+    CRAB_SPRITE,
+    CLAM_SPRITE_CLOSED,
+    CLAM_SPRITE_OPEN,
+    OCTOPUS_SPRITE
+];
 
 const makeSwimmer = (over: Partial<Swimmer> = {}): Swimmer => ({
     kind: 'fish',
@@ -40,18 +66,19 @@ const tuning = (over: Partial<SwimmerTuning> = {}): SwimmerTuning => ({
     ...over
 });
 
+const water = (over: Partial<WaterStats> = {}): WaterStats => ({
+    cells: 20000,
+    fraction: 0.6,
+    maxDepthCells: 60,
+    ...over
+});
+
 const never = () => 0; // random that never trips a chance roll
 const everywhere = () => true;
 
 describe('sprites', () => {
     it('are rectangular masks', () => {
-        for (const sprite of [
-            FISH_SPRITE,
-            SQUID_SPRITE,
-            CLAM_SPRITE_CLOSED,
-            CLAM_SPRITE_OPEN,
-            OCTOPUS_SPRITE
-        ]) {
+        for (const sprite of ALL_SPRITES) {
             expect(sprite.length).toBeGreaterThan(0);
             for (const row of sprite) expect(row.length).toBe(spriteWidth(sprite));
             expect(spriteHeight(sprite)).toBe(sprite.length);
@@ -59,20 +86,74 @@ describe('sprites', () => {
     });
 
     it('use only known mask characters', () => {
-        for (const sprite of [
-            FISH_SPRITE,
-            SQUID_SPRITE,
-            CLAM_SPRITE_CLOSED,
-            CLAM_SPRITE_OPEN,
-            OCTOPUS_SPRITE
-        ]) {
+        for (const sprite of ALL_SPRITES) {
             for (const row of sprite) expect(row).toMatch(/^[#eo.]+$/);
         }
     });
 
-    it('maps each swimmer kind to its own sprite', () => {
-        expect(spriteFor('fish')).toBe(FISH_SPRITE);
-        expect(spriteFor('squid')).toBe(SQUID_SPRITE);
+    it('gives every swimming species its own sprite', () => {
+        const kinds = ['fish', 'squid', 'jellyfish', 'turtle', 'shark', 'whale'] as const;
+        const seen = new Set(kinds.map((kind) => spriteFor(kind)));
+        expect(seen.size).toBe(kinds.length);
+    });
+
+    it('scales the big animals larger than the small fry', () => {
+        expect(LOOKS.whale.pixelMin).toBeGreaterThan(LOOKS.shark.pixelMin);
+        expect(LOOKS.shark.pixelMin).toBeGreaterThan(LOOKS.fish.pixelMin);
+    });
+});
+
+describe('habitats', () => {
+    const kinds = Object.keys(HABITATS) as CreatureKind[];
+
+    it('keeps every species out of a scene with no water', () => {
+        const dry = water({ cells: 0, fraction: 0, maxDepthCells: 0 });
+        for (const kind of kinds) expect(targetPopulation(HABITATS[kind], dry)).toBe(0);
+    });
+
+    it('lets only small life into a shallow puddle', () => {
+        const puddle = water({ cells: 900, fraction: 0.03, maxDepthCells: 7 });
+        expect(targetPopulation(HABITATS.fish, puddle)).toBeGreaterThan(0);
+        expect(targetPopulation(HABITATS.clam, puddle)).toBeGreaterThan(0);
+        // Nothing large belongs in a puddle.
+        expect(targetPopulation(HABITATS.shark, puddle)).toBe(0);
+        expect(targetPopulation(HABITATS.whale, puddle)).toBe(0);
+        expect(targetPopulation(HABITATS.turtle, puddle)).toBe(0);
+    });
+
+    it('only shows a whale once most of the scene is deep water', () => {
+        // Plenty of water, but not deep enough.
+        expect(habitatSuits(HABITATS.whale, water({ fraction: 0.7, maxDepthCells: 20 }))).toBe(false);
+        // Deep, but only a sliver of the scene.
+        expect(habitatSuits(HABITATS.whale, water({ fraction: 0.2, maxDepthCells: 80 }))).toBe(false);
+        // Both: a real ocean.
+        expect(habitatSuits(HABITATS.whale, water({ fraction: 0.7, maxDepthCells: 80 }))).toBe(true);
+    });
+
+    it('orders species so bigger animals need more ocean', () => {
+        const order: CreatureKind[] = ['fish', 'squid', 'jellyfish', 'turtle', 'shark', 'whale'];
+        for (let i = 1; i < order.length; i++) {
+            expect(HABITATS[order[i]].minWaterFraction).toBeGreaterThanOrEqual(
+                HABITATS[order[i - 1]].minWaterFraction
+            );
+            expect(HABITATS[order[i]].minDepthCells).toBeGreaterThanOrEqual(
+                HABITATS[order[i - 1]].minDepthCells
+            );
+        }
+    });
+
+    it('keeps rare animals rare and small fry plentiful in a full ocean', () => {
+        const ocean = water({ cells: 40000, fraction: 0.75, maxDepthCells: 90 });
+        expect(targetPopulation(HABITATS.whale, ocean)).toBe(1);
+        expect(targetPopulation(HABITATS.shark, ocean)).toBeLessThanOrEqual(2);
+        expect(targetPopulation(HABITATS.fish, ocean)).toBeGreaterThan(10);
+    });
+
+    it('never exceeds a species ceiling however large the ocean', () => {
+        const vast = water({ cells: 10_000_000, fraction: 1, maxDepthCells: 500 });
+        for (const kind of kinds) {
+            expect(targetPopulation(HABITATS[kind], vast)).toBeLessThanOrEqual(HABITATS[kind].max);
+        }
     });
 });
 
@@ -112,8 +193,7 @@ describe('stepSwimmer', () => {
         };
         const swimmer = makeSwimmer({ x: 300, y: 200, retargetAt: 0 });
         for (let t = 0; t < 60 * 180; t++) {
-            const alive = stepSwimmer(swimmer, 1 / 60, t * 16.7, isWater, random, tuning());
-            expect(alive).toBe(true);
+            expect(stepSwimmer(swimmer, 1 / 60, t * 16.7, isWater, random, tuning())).toBe(true);
         }
     });
 
@@ -134,14 +214,11 @@ describe('stepSwimmer', () => {
     it('picks a new depth when the current one expires', () => {
         const swimmer = makeSwimmer({ retargetAt: 0 });
         stepSwimmer(swimmer, 0.016, 1000, everywhere, () => 1, tuning({ roamRange: 200 }));
-        // random()=1 aims a full range downward, and the next target is queued.
         expect(swimmer.targetY).toBeGreaterThan(100);
         expect(swimmer.retargetAt).toBeGreaterThan(1000);
     });
 
     it('ranges across the water rather than pacing one spot', () => {
-        // Open water 2000x600. Over a few minutes a swimmer should cover a wide
-        // span both across and down — the whole point of the roaming model.
         const swimmer = makeSwimmer({ retargetAt: 0, speed: 30 });
         const isWater = (x: number, y: number) => x > 0 && x < 2000 && y > 0 && y < 600;
         let seed = 1;
@@ -180,27 +257,27 @@ describe('stepSwimmer', () => {
     });
 });
 
-describe('stepOctopus', () => {
-    it('crawls along and reverses at an obstacle', () => {
-        const octopus: Octopus = { x: 50, y: 200, dir: 1, hue: 288, phase: 0 };
-        stepOctopus(octopus, 1, everywhere, 10);
-        expect(octopus.x).toBeCloseTo(60, 5);
+describe('stepCrawler', () => {
+    it('walks along and reverses at an obstacle', () => {
+        const crab: Crawler = { kind: 'crab', x: 50, y: 200, dir: 1, hue: 8, phase: 0 };
+        stepCrawler(crab, 1, everywhere, 10);
+        expect(crab.x).toBeCloseTo(60, 5);
 
-        const blocked: Octopus = { x: 50, y: 200, dir: 1, hue: 288, phase: 0 };
-        stepOctopus(blocked, 1, (x) => x <= 50, 10);
+        const blocked: Crawler = { kind: 'octopus', x: 50, y: 200, dir: 1, hue: 288, phase: 0 };
+        stepCrawler(blocked, 1, (x) => x <= 50, 10);
         expect(blocked.dir).toBe(-1);
         expect(blocked.x).toBe(50);
     });
 
-    it('reports a stranded octopus', () => {
-        const octopus: Octopus = { x: 50, y: 200, dir: 1, hue: 288, phase: 0 };
-        expect(stepOctopus(octopus, 1, () => false, 10)).toBe(false);
+    it('reports a stranded crawler', () => {
+        const crawler: Crawler = { kind: 'octopus', x: 50, y: 200, dir: 1, hue: 288, phase: 0 };
+        expect(stepCrawler(crawler, 1, () => false, 10)).toBe(false);
     });
 });
 
 describe('clamIsOpen', () => {
     it('stays shut most of the cycle and gapes near the end', () => {
-        const clam: Clam = { col: 4, y: 10, hue: 300, phase: 0 };
+        const clam: BedDweller = { kind: 'clam', col: 4, y: 10, hue: 300, phase: 0 };
         const period = 1000;
         let openTicks = 0;
         for (let t = 0; t < period; t += 10) if (clamIsOpen(clam, t, period)) openTicks++;
@@ -211,8 +288,8 @@ describe('clamIsOpen', () => {
 
     it('puts clams out of phase with each other', () => {
         const period = 1000;
-        const a: Clam = { col: 1, y: 10, hue: 300, phase: 0 };
-        const b: Clam = { col: 2, y: 10, hue: 300, phase: 500 };
+        const a: BedDweller = { kind: 'clam', col: 1, y: 10, hue: 300, phase: 0 };
+        const b: BedDweller = { kind: 'clam', col: 2, y: 10, hue: 300, phase: 500 };
         let differ = 0;
         for (let t = 0; t < period; t += 10) {
             if (clamIsOpen(a, t, period) !== clamIsOpen(b, t, period)) differ++;

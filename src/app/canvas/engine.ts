@@ -4,26 +4,17 @@ import { hslToPackedColor, materialOf, packedColorToCss, withMaterial } from './
 import {
     BUBBLE_RISE_PX_PER_S,
     BUBBLE_SPAWN_CHANCE,
-    CLAM_HUES,
     CLAM_OPEN_PERIOD_MS,
     DEFAULT_GRAINS_PER_DROP,
     DIRTY_MARGIN_COLS,
-    DISPLACED_WATER_RISE_CELLS_PER_S,
-    DISPLACED_WATER_SPREAD_CELLS_PER_S,
     ERASE_BRUSH_RADIUS_CELLS,
     EXPLOSION_FULL_CHARGE_MS,
-    FISH_BOB_PX_PER_S,
-    FISH_HUES,
-    FISH_PER_10K_WATER_CELLS,
-    FISH_PIXEL_MAX,
-    FISH_PIXEL_MIN,
-    FISH_RETARGET_MAX_MS,
-    FISH_RETARGET_MIN_MS,
-    FISH_ROAM_RANGE_PX,
-    FISH_SPEED_PX_PER_S_MAX,
-    FISH_SPEED_PX_PER_S_MIN,
-    FISH_TURN_CHANCE_PER_S,
-    FISH_VERTICAL_SPEED_PX_PER_S,
+    SWIMMER_BOB_PX_PER_S,
+    SWIMMER_RETARGET_MAX_MS,
+    SWIMMER_RETARGET_MIN_MS,
+    SWIMMER_ROAM_RANGE_PX,
+    SWIMMER_TURN_CHANCE_PER_S,
+    SWIMMER_VERTICAL_SPEED_PX_PER_S,
     FLORA_COLUMNS_PER_TICK,
     FLORA_TICK_MS,
     GRAVITY_CELLS_PER_S2,
@@ -36,30 +27,17 @@ import {
     MATERIAL_WATER,
     MAX_ACTIVE_PARTICLES,
     MAX_BUBBLES,
-    MAX_CLAMS,
-    MAX_FISH,
-    MAX_OCTOPUS,
-    MAX_SQUID,
+    MAX_SETTLE_ROLLS,
+    MAX_TOPPLE_SLIDES_PER_PASS,
     MAX_EXPLOSION_RADIUS_CELLS,
     MAX_FALL_SPEED_CELLS_PER_S,
     MIN_EXPLOSION_RADIUS_CELLS,
-    OCTOPUS_HUES,
-    OCTOPUS_PER_10K_WATER_CELLS,
-    OCTOPUS_PIXEL,
-    OCTOPUS_SPEED_PX_PER_S,
     PURE_SAND_LIGHTNESS,
     PURE_SAND_SATURATION,
-    SAND_IN_WATER_DRIFT_CELLS_PER_S,
     SAND_IN_WATER_FALL_CELLS_PER_S,
     SETTLE_SWEEP_COLUMNS_PER_STEP,
     SPAWN_INTERVAL_MS,
     SQUARE_SIZE,
-    SQUID_HUES,
-    SQUID_PER_10K_WATER_CELLS,
-    SQUID_PIXEL_MAX,
-    SQUID_PIXEL_MIN,
-    SQUID_SPEED_PX_PER_S_MAX,
-    SQUID_SPEED_PX_PER_S_MIN,
     STONE_BRUSH_RADIUS_CELLS,
     STONE_HUE,
     STONE_LIGHTNESS,
@@ -75,20 +53,30 @@ import {
 } from './constants';
 import { FloraContext, isFlora, updateFloraColumn } from './flora';
 import {
-    Clam,
+    BedDweller,
+    BedKind,
     clamIsOpen,
     CLAM_SPRITE_CLOSED,
     CLAM_SPRITE_OPEN,
-    Octopus,
+    CRAB_SPRITE,
+    Crawler,
+    CrawlerKind,
+    CreatureKind,
+    HABITATS,
+    LOOKS,
     OCTOPUS_SPRITE,
+    saturationFor,
     spriteFor,
     spriteHeight,
     spriteWidth,
-    stepOctopus,
+    STARFISH_SPRITE,
+    stepCrawler,
     stepSwimmer,
     Swimmer,
     SwimmerKind,
-    SwimmerTuning
+    SwimmerTuning,
+    targetPopulation,
+    WaterStats
 } from './life';
 import { scatterRocks } from './rocks';
 import { CelestialPosition, drawSky, daylightOf, moonPosition, skyPhase, sunPosition } from './sky';
@@ -102,6 +90,11 @@ const MAX_CATCHUP_STEPS = 6;
 const TWO_PI = Math.PI * 2;
 const SHAKE_DURATION_MS = 260;
 const SPARK_GRAVITY_PX_PER_S2 = 900;
+
+// Every species the ocean can hold, grouped by how it gets about.
+const SWIMMER_KINDS: SwimmerKind[] = ['fish', 'squid', 'jellyfish', 'turtle', 'shark', 'whale'];
+const CRAWLER_KINDS: CrawlerKind[] = ['octopus', 'crab'];
+const BED_KINDS: BedKind[] = ['clam', 'starfish'];
 
 // Sand/water particles live in fractional grid-cell coordinates; visual
 // effects (sparks, shockwaves, flashes, shooting stars) live in css pixels.
@@ -160,8 +153,8 @@ export class SandEngine {
     private shootingStars: ShootingStar[] = [];
     private bubbles: Bubble[] = [];
     private swimmers: Swimmer[] = [];
-    private clams: Clam[] = [];
-    private octopuses: Octopus[] = [];
+    private bedLife: BedDweller[] = [];
+    private crawlers: Crawler[] = [];
     private moonCanvas: HTMLCanvasElement | null = null;
     private sunCanvas: HTMLCanvasElement | null = null;
     private dirtyColumns = new Set<number>();
@@ -244,8 +237,8 @@ export class SandEngine {
         this.shootingStars = [];
         this.bubbles = [];
         this.swimmers = [];
-        this.clams = [];
-        this.octopuses = [];
+        this.bedLife = [];
+        this.crawlers = [];
         this.dirtyColumns.clear();
         this.charge = null;
         this.chargeReadyFired = false;
@@ -439,15 +432,9 @@ export class SandEngine {
         }
         this.shootingStars = this.shootingStars.filter((star) => now - star.bornAt < star.lifeMs);
 
-        // Wake a rotating slice of columns so terrain that settled outside a
-        // dirty window still gets re-checked and can never freeze mid-slump.
-        if (this.cols > 0) {
-            for (let i = 0; i < SETTLE_SWEEP_COLUMNS_PER_STEP; i++) {
-                this.dirtyColumns.add(this.settleCursor);
-                this.settleCursor = (this.settleCursor + 1) % this.cols;
-            }
-        }
-
+        // Re-check a rotating slice of terrain so a slope that settled outside
+        // a dirty window still gets seen and can never freeze mid-slump.
+        this.sweepTerrain();
         this.relaxDirtyColumns();
 
         if (now - this.lastFloraTickMs >= FLORA_TICK_MS) {
@@ -512,9 +499,6 @@ export class SandEngine {
 
         p.vx += this.gravityX * dt;
         p.vx *= Math.max(0, 1 - (inWater ? 3 : 0.4) * dt);
-        // Sinking grains wander a little instead of dropping on rails, which
-        // is what spreads a pour into a mound rather than a spike.
-        if (inWater) p.vx += (Math.random() - 0.5) * SAND_IN_WATER_DRIFT_CELLS_PER_S;
         this.moveHorizontally(p, dt, (pixel) => this.blocksSand(pixel));
 
         p.vy = Math.min(p.vy + GRAVITY_CELLS_PER_S2 * dt, MAX_FALL_SPEED_CELLS_PER_S);
@@ -742,20 +726,31 @@ export class SandEngine {
         while (y >= 0 && this.blocksSand(this.pixelAt(cellX, y))) y--;
         if (y < 0) return; // column is full to the top; the grain is lost
 
+        // Roll down the slope on landing instead of stacking where it hit.
+        // A pour through deep water keeps hundreds of grains in flight in one
+        // column; the instant the pile rises to meet them they all settle on
+        // top of one another and throw up a spire far faster than the relax
+        // pass can topple it back down. Stepping sideways only into a free
+        // cell, then falling, keeps the grain from passing through walls.
+        let col = cellX;
+        for (let roll = 0; roll < MAX_SETTLE_ROLLS; roll++) {
+            const here = this.terrainSurfaceOf(col);
+            const leftDrop = col > 0 ? this.terrainSurfaceOf(col - 1) - here : 0;
+            const rightDrop = col < this.cols - 1 ? this.terrainSurfaceOf(col + 1) - here : 0;
+            let dir = 0;
+            if (leftDrop > TOPPLE_HEIGHT_DIFF_CELLS && leftDrop >= rightDrop) dir = -1;
+            else if (rightDrop > TOPPLE_HEIGHT_DIFF_CELLS) dir = 1;
+            if (dir === 0) break;
+            if (this.blocksSand(this.pixelAt(col + dir, y))) break; // something in the way
+            col += dir;
+            while (y + 1 < this.rows && !this.blocksSand(this.pixelAt(col, y + 1))) y++;
+        }
+        cellX = col;
+
         const displaced = this.pixelAt(cellX, y);
         this.setCell(cellX, y, p.color);
-        if (displaced !== 0 && this.particles.length < MAX_ACTIVE_PARTICLES) {
-            // Sand sinks: the water that occupied this cell wells up around it.
-            this.particles.push(
-                this.makeParticle(
-                    cellX + 0.5,
-                    y + 0.5,
-                    (Math.random() - 0.5) * DISPLACED_WATER_SPREAD_CELLS_PER_S,
-                    -DISPLACED_WATER_RISE_CELLS_PER_S,
-                    displaced
-                )
-            );
-        }
+        // Only water needs rehousing; flora the grain landed on is buried.
+        if (displaced !== 0 && displaced >>> 24 === MATERIAL_WATER) this.displaceWater(cellX, y, displaced);
         this.markDirtyAround(cellX);
     }
 
@@ -816,10 +811,15 @@ export class SandEngine {
         const newlyDirty: number[] = [];
 
         for (const col of this.dirtyColumns) {
-            if (this.particles.length >= MAX_ACTIVE_PARTICLES - 8) break;
             processed.push(col);
 
-            for (let y = this.rows - 2; y >= 0; y--) {
+            // Only the falling and spreading passes below mint particles, so
+            // only they wait for budget. Levelling and toppling move cells
+            // directly and must keep running — bailing out of the whole column
+            // when the budget filled was what stalled relaxation mid-pour and
+            // let the pile climb into a spike.
+            const canSpawn = this.particles.length < MAX_ACTIVE_PARTICLES - 8;
+            for (let y = canSpawn ? this.rows - 2 : -1; y >= 0; y--) {
                 const idx = y * this.cols + col;
                 const pixel = this.pixels[idx];
                 if (pixel === 0) continue;
@@ -865,45 +865,7 @@ export class SandEngine {
                 }
             }
 
-            // Loose sand topples when it towers over a neighbouring column.
-            const surface = this.surfaceOf(col);
-            if (surface < this.rows) {
-                const topPixel = this.pixels[surface * this.cols + col];
-                if (topPixel >>> 24 === MATERIAL_SAND) {
-                    const leftDrop = col > 0 ? this.surfaceOf(col - 1) - surface : 0;
-                    const rightDrop = col < this.cols - 1 ? this.surfaceOf(col + 1) - surface : 0;
-                    // Keep the unstable side awake even when the grain topples
-                    // the other way, so a slope relaxes all the way out instead
-                    // of stalling at the edge of the dirty window.
-                    if (leftDrop > TOPPLE_HEIGHT_DIFF_CELLS) newlyDirty.push(col - 1);
-                    if (rightDrop > TOPPLE_HEIGHT_DIFF_CELLS) newlyDirty.push(col + 1);
-
-                    let dir = 0;
-                    if (this.gravityX > 25 && rightDrop > 1) dir = 1;
-                    else if (this.gravityX < -25 && leftDrop > 1) dir = -1;
-                    else if (leftDrop > TOPPLE_HEIGHT_DIFF_CELLS && leftDrop >= rightDrop) dir = -1;
-                    else if (rightDrop > TOPPLE_HEIGHT_DIFF_CELLS) dir = 1;
-                    if (dir !== 0) {
-                        this.clearCell(col, surface);
-                        // Release the grain over the neighbouring column. Sent
-                        // from its own column it simply drops back into the gap
-                        // it just left — too slow sideways to clear the cell
-                        // boundary — so the pile never relaxed and the spike
-                        // stayed put. The neighbour is lower by definition, so
-                        // this cell is always free.
-                        this.particles.push(
-                            this.makeParticle(
-                                col + dir + 0.5,
-                                surface + 0.5,
-                                dir * (3 + Math.random() * 3),
-                                0,
-                                topPixel
-                            )
-                        );
-                        newlyDirty.push(col, col + dir);
-                    }
-                }
-            }
+            this.toppleColumn(col, newlyDirty);
         }
 
         for (const col of processed) this.dirtyColumns.delete(col);
@@ -916,6 +878,98 @@ export class SandEngine {
         for (let y = 0; y < this.rows; y++) {
             const pixel = this.pixels[y * this.cols + col];
             if (pixel !== 0 && pixel >>> 24 !== MATERIAL_WATER) return y;
+        }
+        return this.rows;
+    }
+
+    // Rehouses the water a grain displaced when it took a cell. The column's
+    // surface simply rises by one, which is what putting sand in water does,
+    // and costs no particle — a pour into deep water spawns one grain per drop
+    // and the budget is precious.
+    private displaceWater(col: number, fromY: number, water: number): void {
+        const waterTop = this.waterSurfaceOf(col);
+        // waterSurfaceOf only reports a row when it is the column's topmost
+        // occupied cell, so the cell above it is guaranteed free.
+        if (waterTop > 0) {
+            this.setCell(col, waterTop - 1, water);
+            return;
+        }
+        if (this.particles.length < MAX_ACTIVE_PARTICLES) {
+            this.particles.push(this.makeParticle(col + 0.5, fromY + 0.5, 0, 0, water));
+        }
+    }
+
+    // Slides loose sand off a column that towers over its neighbours. A tower
+    // sheds several grains per pass, not one: a steady pour stacks grains
+    // faster than a single-grain-per-frame slide can clear them, which let a
+    // spike climb out of the pile while sand was still falling.
+    private toppleColumn(col: number, newlyDirty: number[]): void {
+        for (let slide = 0; slide < MAX_TOPPLE_SLIDES_PER_PASS; slide++) {
+            const surface = this.terrainSurfaceOf(col);
+            if (surface >= this.rows) return;
+            const topPixel = this.pixels[surface * this.cols + col];
+            if (topPixel >>> 24 !== MATERIAL_SAND) return; // packed sand and stone hold
+
+            const leftDrop = col > 0 ? this.terrainSurfaceOf(col - 1) - surface : 0;
+            const rightDrop = col < this.cols - 1 ? this.terrainSurfaceOf(col + 1) - surface : 0;
+            // Keep the unstable side awake even when the grain topples the other
+            // way, so a slope relaxes all the way out instead of stalling at the
+            // edge of the dirty window.
+            if (leftDrop > TOPPLE_HEIGHT_DIFF_CELLS) newlyDirty.push(col - 1);
+            if (rightDrop > TOPPLE_HEIGHT_DIFF_CELLS) newlyDirty.push(col + 1);
+
+            let dir = 0;
+            if (this.gravityX > 25 && rightDrop > 1) dir = 1;
+            else if (this.gravityX < -25 && leftDrop > 1) dir = -1;
+            else if (leftDrop > TOPPLE_HEIGHT_DIFF_CELLS && leftDrop >= rightDrop) dir = -1;
+            else if (rightDrop > TOPPLE_HEIGHT_DIFF_CELLS) dir = 1;
+            if (dir === 0) return;
+
+            // Move the grain straight onto the neighbouring ground rather than
+            // launching it as a particle. Sliding one cell down a slope needs
+            // no flight, and more importantly a particle cannot be spawned once
+            // the budget is full — which is exactly when a heavy pour is piling
+            // sand up and toppling is needed most. Grid moves always work.
+            const landing = this.terrainSurfaceOf(col + dir) - 1;
+            if (landing < 0) return;
+            this.clearCell(col, surface);
+            const displaced = this.pixelAt(col + dir, landing);
+            this.setCell(col + dir, landing, topPixel);
+            if (displaced !== 0 && displaced >>> 24 === MATERIAL_WATER) {
+                this.displaceWater(col + dir, landing, displaced);
+            }
+            newlyDirty.push(col, col + dir);
+        }
+    }
+
+    // Re-checks a rotating slice of the grid for over-steep sand. This only
+    // touches terrain: routing the sweep through the full dirty-column pass
+    // instead kept re-examining settled water too, and every water cell that
+    // could spread became a particle — thousands of them, which both churned
+    // the whole pool and exhausted the budget that relaxation needs to run.
+    private sweepTerrain(): void {
+        if (this.cols === 0) return;
+        const newlyDirty: number[] = [];
+        for (let i = 0; i < SETTLE_SWEEP_COLUMNS_PER_STEP; i++) {
+            this.toppleColumn(this.settleCursor, newlyDirty);
+            this.settleCursor = (this.settleCursor + 1) % this.cols;
+        }
+        for (const col of newlyDirty) {
+            if (col >= 0 && col < this.cols) this.dirtyColumns.add(col);
+        }
+    }
+
+    // Topmost cell of the ground itself, ignoring water and anything growing on
+    // it. Slope comparisons must use this: surfaceOf counts a kelp stalk as
+    // terrain, so a planted column read as high ground and the sand beside it
+    // refused to slide, letting pours pile up into towers around the reef.
+    private terrainSurfaceOf(col: number): number {
+        for (let y = 0; y < this.rows; y++) {
+            const pixel = this.pixels[y * this.cols + col];
+            if (pixel === 0) continue;
+            const material = pixel >>> 24;
+            if (material === MATERIAL_WATER || isFlora(material)) continue;
+            return y;
         }
         return this.rows;
     }
@@ -1017,12 +1071,12 @@ export class SandEngine {
     };
 
     private static readonly swimmerTuning: SwimmerTuning = {
-        turnChancePerSecond: FISH_TURN_CHANCE_PER_S,
-        bobSpeed: FISH_BOB_PX_PER_S,
-        verticalSpeed: FISH_VERTICAL_SPEED_PX_PER_S,
-        roamRange: FISH_ROAM_RANGE_PX,
-        retargetMinMs: FISH_RETARGET_MIN_MS,
-        retargetMaxMs: FISH_RETARGET_MAX_MS
+        turnChancePerSecond: SWIMMER_TURN_CHANCE_PER_S,
+        bobSpeed: SWIMMER_BOB_PX_PER_S,
+        verticalSpeed: SWIMMER_VERTICAL_SPEED_PX_PER_S,
+        roamRange: SWIMMER_ROAM_RANGE_PX,
+        retargetMinMs: SWIMMER_RETARGET_MIN_MS,
+        retargetMaxMs: SWIMMER_RETARGET_MAX_MS
     };
 
     private updateLife(dt: number, now: number): void {
@@ -1041,87 +1095,131 @@ export class SandEngine {
             }
         }
 
-        for (let i = this.octopuses.length - 1; i >= 0; i--) {
-            if (!stepOctopus(this.octopuses[i], dt, this.isWaterAtPx, OCTOPUS_SPEED_PX_PER_S)) {
-                this.octopuses[i] = this.octopuses[this.octopuses.length - 1];
-                this.octopuses.pop();
+        for (let i = this.crawlers.length - 1; i >= 0; i--) {
+            const crawler = this.crawlers[i];
+            const speed = LOOKS[crawler.kind].speedMin;
+            if (!stepCrawler(crawler, dt, this.isWaterAtPx, speed)) {
+                this.crawlers[i] = this.crawlers[this.crawlers.length - 1];
+                this.crawlers.pop();
             }
         }
 
-        this.clams = this.clams.filter((clam) => this.clamStillSubmerged(clam));
+        this.bedLife = this.bedLife.filter((dweller) => this.bedLifeStillSubmerged(dweller));
     }
 
-    // A clam only keeps its spot while it is sitting on the bed under water.
-    private clamStillSubmerged(clam: Clam): boolean {
-        const surface = this.surfaceOf(clam.col);
-        if (surface >= this.rows || surface <= 0 || Math.abs(surface - clam.y) > 1) return false;
-        clam.y = surface;
-        return materialOf(this.pixelAt(clam.col, surface - 1)) === MATERIAL_WATER;
+    // A clam or starfish only keeps its spot while sitting on the bed under water.
+    private bedLifeStillSubmerged(dweller: BedDweller): boolean {
+        const surface = this.surfaceOf(dweller.col);
+        if (surface >= this.rows || surface <= 0 || Math.abs(surface - dweller.y) > 1) return false;
+        dweller.y = surface;
+        return materialOf(this.pixelAt(dweller.col, surface - 1)) === MATERIAL_WATER;
     }
 
-    // Keeps the population in step with how much water there is to live in.
+    // How much water there is and how deep it gets. Species use this to decide
+    // whether the ocean is big enough for them to appear at all.
+    private measureWater(): WaterStats {
+        let cells = 0;
+        let maxDepth = 0;
+        // Sample every other column; the numbers only gate spawning.
+        for (let x = 0; x < this.cols; x += 2) {
+            let first = -1;
+            let last = -1;
+            for (let y = 0; y < this.rows; y++) {
+                if (materialOf(this.pixels[y * this.cols + x]) !== MATERIAL_WATER) continue;
+                cells++;
+                if (first === -1) first = y;
+                last = y;
+            }
+            // Depth is the span from surface to floor, not the longest unbroken
+            // run: a kelp forest growing up the column interrupts the run, and
+            // measuring that way made a deep, well-grown reef read as shallow
+            // and quietly locked sharks and whales out of it.
+            if (first !== -1) maxDepth = Math.max(maxDepth, last - first + 1);
+        }
+        cells *= 2; // undo the sampling stride
+        const total = Math.max(1, this.cols * this.rows);
+        return { cells, fraction: cells / total, maxDepthCells: maxDepth };
+    }
+
+    // Keeps every population in step with the ocean it lives in. Species whose
+    // habitat is not met stay at zero, so filling the world is what brings the
+    // bigger animals in.
     private repopulateLife(): void {
         if (this.cols === 0) return;
-        let sampledWater = 0;
-        for (let i = 0; i < this.pixels.length; i += 4) {
-            if (materialOf(this.pixels[i]) === MATERIAL_WATER) sampledWater++;
-        }
-        const waterCells = sampledWater * 4;
+        const water = this.measureWater();
 
-        const countOf = (kind: SwimmerKind): number =>
-            this.swimmers.reduce((total, swimmer) => total + (swimmer.kind === kind ? 1 : 0), 0);
+        // Drain the sea and the big animals leave again, so a species really is
+        // only present while its habitat holds.
+        const trim = <T extends { kind: CreatureKind }>(list: T[]): T[] => {
+            const remaining: Record<string, number> = {};
+            return list.filter((creature) => {
+                const target = targetPopulation(HABITATS[creature.kind], water);
+                const kept = remaining[creature.kind] ?? 0;
+                if (kept >= target) return false;
+                remaining[creature.kind] = kept + 1;
+                return true;
+            });
+        };
+        this.swimmers = trim(this.swimmers);
+        this.crawlers = trim(this.crawlers);
+        this.bedLife = trim(this.bedLife);
 
-        const targetFish = Math.min(
-            MAX_FISH,
-            Math.floor((waterCells / 10000) * FISH_PER_10K_WATER_CELLS)
+        const stock = <K extends CreatureKind>(
+            kinds: K[],
+            count: (kind: K) => number,
+            spawn: (kind: K) => boolean
+        ): void => {
+            for (const kind of kinds) {
+                const target = targetPopulation(HABITATS[kind], water);
+                let living = count(kind);
+                while (living < target && spawn(kind)) living++;
+            }
+        };
+
+        stock(
+            SWIMMER_KINDS,
+            (kind) => this.swimmers.reduce((n, s) => n + (s.kind === kind ? 1 : 0), 0),
+            (kind) => this.spawnSwimmer(kind)
         );
-        while (countOf('fish') < targetFish && this.spawnSwimmer('fish')) {
-            /* keep stocking until the water is full or no spot is found */
-        }
-
-        const targetSquid = Math.min(
-            MAX_SQUID,
-            Math.floor((waterCells / 10000) * SQUID_PER_10K_WATER_CELLS)
+        stock(
+            CRAWLER_KINDS,
+            (kind) => this.crawlers.reduce((n, c) => n + (c.kind === kind ? 1 : 0), 0),
+            (kind) => this.spawnCrawler(kind)
         );
-        while (countOf('squid') < targetSquid && this.spawnSwimmer('squid')) {
-            /* squid drift alongside the schools */
-        }
-
-        const targetClams = Math.min(MAX_CLAMS, Math.floor(waterCells / 2200));
-        while (this.clams.length < targetClams && this.spawnClam()) {
-            /* same, for the bed */
-        }
-
-        const targetOctopuses = Math.min(
-            MAX_OCTOPUS,
-            Math.floor((waterCells / 10000) * OCTOPUS_PER_10K_WATER_CELLS)
+        stock(
+            BED_KINDS,
+            (kind) => this.bedLife.reduce((n, b) => n + (b.kind === kind ? 1 : 0), 0),
+            (kind) => this.spawnBedLife(kind)
         );
-        while (this.octopuses.length < targetOctopuses && this.spawnOctopus()) {
-            /* and a few crawlers on the bed */
-        }
+    }
+
+    private pickHue(kind: CreatureKind): number {
+        const hues = LOOKS[kind].hues;
+        return hues[Math.floor(Math.random() * hues.length)];
     }
 
     private spawnSwimmer(kind: SwimmerKind): boolean {
-        const squid = kind === 'squid';
-        for (let attempt = 0; attempt < 24; attempt++) {
+        const look = LOOKS[kind];
+        const sprite = spriteFor(kind);
+        // Big animals need room, so only drop them where the water is open.
+        const clearance = (spriteWidth(sprite) * look.pixelMax) / 2;
+        for (let attempt = 0; attempt < 40; attempt++) {
             const cx = Math.floor(Math.random() * this.cols);
             const cy = Math.floor(Math.random() * this.rows);
             if (materialOf(this.pixels[cy * this.cols + cx]) !== MATERIAL_WATER) continue;
-            const minSpeed = squid ? SQUID_SPEED_PX_PER_S_MIN : FISH_SPEED_PX_PER_S_MIN;
-            const maxSpeed = squid ? SQUID_SPEED_PX_PER_S_MAX : FISH_SPEED_PX_PER_S_MAX;
-            const minPixel = squid ? SQUID_PIXEL_MIN : FISH_PIXEL_MIN;
-            const maxPixel = squid ? SQUID_PIXEL_MAX : FISH_PIXEL_MAX;
-            const hues = squid ? SQUID_HUES : FISH_HUES;
+            const x = (cx + 0.5) * CELL;
+            const y = (cy + 0.5) * CELL;
+            if (!this.isWaterAtPx(x - clearance, y) || !this.isWaterAtPx(x + clearance, y)) continue;
             this.swimmers.push({
                 kind,
-                x: (cx + 0.5) * CELL,
-                y: (cy + 0.5) * CELL,
+                x,
+                y,
                 dir: Math.random() < 0.5 ? -1 : 1,
-                speed: minSpeed + Math.random() * (maxSpeed - minSpeed),
-                pixel: minPixel + Math.random() * (maxPixel - minPixel),
-                hue: hues[Math.floor(Math.random() * hues.length)],
+                speed: look.speedMin + Math.random() * (look.speedMax - look.speedMin),
+                pixel: look.pixelMin + Math.random() * (look.pixelMax - look.pixelMin),
+                hue: this.pickHue(kind),
                 bobPhase: Math.random() * TWO_PI,
-                targetY: (cy + 0.5) * CELL,
+                targetY: y,
                 retargetAt: 0
             });
             return true;
@@ -1129,17 +1227,18 @@ export class SandEngine {
         return false;
     }
 
-    private spawnClam(): boolean {
+    private spawnBedLife(kind: BedKind): boolean {
         for (let attempt = 0; attempt < 24; attempt++) {
             const col = Math.floor(Math.random() * this.cols);
-            if (this.clams.some((clam) => Math.abs(clam.col - col) < 4)) continue;
+            if (this.bedLife.some((other) => Math.abs(other.col - col) < 4)) continue;
             const surface = this.surfaceOf(col);
             if (surface <= 0 || surface >= this.rows) continue;
             if (materialOf(this.pixelAt(col, surface - 1)) !== MATERIAL_WATER) continue;
-            this.clams.push({
+            this.bedLife.push({
+                kind,
                 col,
                 y: surface,
-                hue: CLAM_HUES[Math.floor(Math.random() * CLAM_HUES.length)],
+                hue: this.pickHue(kind),
                 phase: Math.random() * CLAM_OPEN_PERIOD_MS
             });
             return true;
@@ -1147,20 +1246,21 @@ export class SandEngine {
         return false;
     }
 
-    private spawnOctopus(): boolean {
+    private spawnCrawler(kind: CrawlerKind): boolean {
         for (let attempt = 0; attempt < 30; attempt++) {
             const col = Math.floor(Math.random() * this.cols);
-            if (this.octopuses.some((other) => Math.abs(other.x / CELL - col) < 12)) continue;
+            if (this.crawlers.some((other) => Math.abs(other.x / CELL - col) < 10)) continue;
             const surface = this.surfaceOf(col);
             if (surface <= 2 || surface >= this.rows) continue;
-            // Settle just off the bed, where there is room to hover.
+            // Settle just off the bed, where there is room to move.
             const row = surface - 2;
             if (materialOf(this.pixelAt(col, row)) !== MATERIAL_WATER) continue;
-            this.octopuses.push({
+            this.crawlers.push({
+                kind,
                 x: (col + 0.5) * CELL,
                 y: (row + 0.5) * CELL,
                 dir: Math.random() < 0.5 ? -1 : 1,
-                hue: OCTOPUS_HUES[Math.floor(Math.random() * OCTOPUS_HUES.length)],
+                hue: this.pickHue(kind),
                 phase: Math.random() * TWO_PI
             });
             return true;
@@ -1199,28 +1299,36 @@ export class SandEngine {
         const ctx = this.ctx;
         const eye = 'rgba(18,22,38,0.9)';
 
-        for (const clam of this.clams) {
-            const sprite = clamIsOpen(clam, now, CLAM_OPEN_PERIOD_MS)
-                ? CLAM_SPRITE_OPEN
-                : CLAM_SPRITE_CLOSED;
-            const pixel = 2;
-            const cx = (clam.col + 0.5) * CELL;
-            const cy = clam.y * CELL - (spriteHeight(sprite) * pixel) / 2;
-            this.drawSprite(sprite, cx, cy, pixel, false, `hsl(${clam.hue},52%,70%)`, eye);
+        for (const dweller of this.bedLife) {
+            const sprite =
+                dweller.kind === 'starfish'
+                    ? STARFISH_SPRITE
+                    : clamIsOpen(dweller, now, CLAM_OPEN_PERIOD_MS)
+                      ? CLAM_SPRITE_OPEN
+                      : CLAM_SPRITE_CLOSED;
+            const pixel = LOOKS[dweller.kind].pixelMin;
+            const cx = (dweller.col + 0.5) * CELL;
+            const cy = dweller.y * CELL - (spriteHeight(sprite) * pixel) / 2;
+            const light = dweller.kind === 'starfish' ? 62 : 70;
+            this.drawSprite(sprite, cx, cy, pixel, false, `hsl(${dweller.hue},${saturationFor(dweller.kind)}%,${light}%)`, eye);
         }
 
-        for (const octopus of this.octopuses) {
-            const pixel = OCTOPUS_PIXEL;
-            const body = `hsl(${octopus.hue},58%,62%)`;
-            this.drawSprite(OCTOPUS_SPRITE, octopus.x, octopus.y, pixel, octopus.dir === -1, body, eye);
+        for (const crawler of this.crawlers) {
+            const pixel = LOOKS[crawler.kind].pixelMin;
+            const body = `hsl(${crawler.hue},58%,62%)`;
+            if (crawler.kind === 'crab') {
+                this.drawSprite(CRAB_SPRITE, crawler.x, crawler.y, pixel, crawler.dir === -1, body, eye);
+                continue;
+            }
+            this.drawSprite(OCTOPUS_SPRITE, crawler.x, crawler.y, pixel, crawler.dir === -1, body, eye);
             // Tentacles trail below the head and curl as it drifts.
             ctx.fillStyle = body;
-            const headBottom = octopus.y + (spriteHeight(OCTOPUS_SPRITE) * pixel) / 2;
+            const headBottom = crawler.y + (spriteHeight(OCTOPUS_SPRITE) * pixel) / 2;
             for (let arm = 0; arm < 4; arm++) {
                 for (let seg = 0; seg < 4; seg++) {
-                    const sway = Math.sin(now * 0.004 + octopus.phase + arm + seg * 0.7) * pixel * 0.9;
+                    const sway = Math.sin(now * 0.004 + crawler.phase + arm + seg * 0.7) * pixel * 0.9;
                     ctx.fillRect(
-                        Math.round(octopus.x + (arm - 1.5) * pixel * 2 + sway),
+                        Math.round(crawler.x + (arm - 1.5) * pixel * 2 + sway),
                         Math.round(headBottom + seg * pixel),
                         pixel,
                         pixel
@@ -1230,17 +1338,21 @@ export class SandEngine {
         }
 
         for (const swimmer of this.swimmers) {
+            // Jellyfish are translucent; everything else is solid.
+            if (swimmer.kind === 'jellyfish') ctx.globalAlpha = 0.65;
             this.drawSprite(
                 spriteFor(swimmer.kind),
                 swimmer.x,
                 swimmer.y,
                 swimmer.pixel,
                 swimmer.dir === -1,
-                `hsl(${swimmer.hue},76%,58%)`,
+                `hsl(${swimmer.hue},${saturationFor(swimmer.kind)}%,58%)`,
                 eye
             );
+            if (swimmer.kind === 'jellyfish') ctx.globalAlpha = 1;
         }
     }
+
 
     // ---------------------------------------------------------------- brushes
 
@@ -1770,8 +1882,14 @@ export class SandEngine {
         return { x, y, vx, vy, flow: 0, color, css: packedColorToCss(color) };
     }
 
+    // Only ground stops a falling grain. Kelp and coral are soft: sand drops
+    // straight past and buries them. Letting a stalk carry sand meant a single
+    // one-cell frond could hold up a tower of it, which is where those thin
+    // spires rising out of the reef came from.
     private blocksSand(pixel: number): boolean {
-        return pixel !== 0 && pixel >>> 24 !== MATERIAL_WATER;
+        if (pixel === 0) return false;
+        const material = pixel >>> 24;
+        return material !== MATERIAL_WATER && !isFlora(material);
     }
 
     private isFree(x: number, y: number): boolean {
