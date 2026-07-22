@@ -34,6 +34,7 @@ const Canvas = (): React.JSX.Element => {
         if (!engine) return;
 
         engineRef.current = engine;
+        (window as unknown as { __sandEngine: SandEngine }).__sandEngine = engine; // TEMP
         const saved = loadGrid();
         if (saved) engine.restore(saved);
         engine.start();

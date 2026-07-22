@@ -39,6 +39,27 @@ export const STONE_HUE = 222;
 export const STONE_SATURATION = 8;
 export const STONE_LIGHTNESS = 42;
 export const STONE_BRUSH_RADIUS_CELLS = 1.6;
+
+// Stone falls as a rigid mass rather than as grains, so it accelerates like
+// anything heavy but is capped lower than loose sand — a slab reads as
+// ponderous, not skittish.
+export const STONE_FALL_ACCEL_CELLS_PER_S2 = 150;
+export const STONE_MAX_FALL_CELLS_PER_S = 70;
+// Sand can also leave from under a slab via routes too hot to instrument
+// (relaxation, toppling, a landing grain's roll), so as well as the explicit
+// triggers the whole grid is re-examined every so many steps.
+export const STONE_RESCAN_EVERY_STEPS = 10;
+// Dust thrown up where a landing slab meets the ground, capped like the flora
+// death sparks so a wide slab cannot flood the effect list.
+export const STONE_LANDING_SPARKS_MAX = 10;
+export const STONE_LANDING_SHAKE_MAX = 7;
+// A mass balances only while its centre sits over its footing. Land one on a
+// pinnacle and it tips off instead of standing on a single pixel; this caps
+// how far it may work its way sideways before it has to settle regardless.
+export const STONE_MAX_TIPS_PER_LANDING = 24;
+// Draw a closed ring of stone and the pocket inside it turns solid. Capped so
+// a shape that quietly encircles half the scene cannot petrify all of it.
+export const STONE_MAX_ENCLOSED_FILL_CELLS = 6000;
 export const ERASE_BRUSH_RADIUS_CELLS = 3.2;
 
 // A column of loose sand topples once it stands more than this many cells

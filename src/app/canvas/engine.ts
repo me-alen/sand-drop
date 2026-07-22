@@ -39,8 +39,15 @@ import {
     SPAWN_INTERVAL_MS,
     SQUARE_SIZE,
     STONE_BRUSH_RADIUS_CELLS,
+    STONE_FALL_ACCEL_CELLS_PER_S2,
     STONE_HUE,
+    STONE_LANDING_SHAKE_MAX,
+    STONE_LANDING_SPARKS_MAX,
     STONE_LIGHTNESS,
+    STONE_MAX_ENCLOSED_FILL_CELLS,
+    STONE_MAX_FALL_CELLS_PER_S,
+    STONE_MAX_TIPS_PER_LANDING,
+    STONE_RESCAN_EVERY_STEPS,
     STONE_SATURATION,
     TILT_MAX_GRAVITY_RATIO,
     TOPPLE_HEIGHT_DIFF_CELLS,
@@ -79,6 +86,18 @@ import {
     WaterStats
 } from './life';
 import { scatterRocks } from './rocks';
+import {
+    bodyCanDescend,
+    bodyCanShift,
+    bodyRowRuns,
+    bodyRuns,
+    bodyTipDirection,
+    findEnclosedCells,
+    findFloatingBodies,
+    findUnstableBodies,
+    StoneBody,
+    StoneContext
+} from './stone';
 import { CelestialPosition, drawSky, daylightOf, moonPosition, skyPhase, sunPosition } from './sky';
 import { decodeRle, encodeRle, SavedGrid } from './storage';
 
@@ -123,6 +142,8 @@ type Flash = { x: number; y: number; radius: number; bornAt: number; durMs: numb
 type Star = { x: number; y: number; size: number; baseAlpha: number; phase: number; speed: number };
 type ShootingStar = { x: number; y: number; vx: number; vy: number; bornAt: number; lifeMs: number };
 type Bubble = { x: number; y: number; wobblePhase: number; wobbleSpeed: number; radius: number };
+// A detached mass of stone on its way down, with the momentum it has built up.
+type FallingStone = { body: StoneBody; speed: number; travel: number; tips: number };
 type ChargeState = { cellX: number; cellY: number; startMs: number };
 
 export type Brush = 'sand' | 'water' | 'stone' | 'erase';
@@ -176,6 +197,10 @@ export class SandEngine {
     private lastFrameMs: number | null = null;
     private accumulatorMs = 0;
     private disposed = false;
+
+    private stoneBodies: FallingStone[] = [];
+    private stoneDirty = true;
+    private stoneScanTick = 0;
 
     private lastFloraTickMs = 0;
     private floraCursor = 0;
@@ -239,6 +264,8 @@ export class SandEngine {
         this.swimmers = [];
         this.bedLife = [];
         this.crawlers = [];
+        this.stoneBodies = [];
+        this.stoneDirty = true;
         this.dirtyColumns.clear();
         this.charge = null;
         this.chargeReadyFired = false;
@@ -250,6 +277,46 @@ export class SandEngine {
         this.seedTerrain();
         this.buildCastle();
     }
+
+    // TEMP: verification helpers.
+    debugClear(): void {
+        this.pixels.fill(0);
+        for (let x = 0; x < this.cols; x++) this.dirtyColumns.add(x);
+    }
+
+    debugFill(x0: number, y0: number, x1: number, y1: number, material: number): void {
+        const color =
+            material === MATERIAL_STONE ? this.stoneColor()
+            : material === MATERIAL_WATER ? this.waterColor()
+            : this.pureSandColor();
+        for (let y = y0; y <= y1; y++) {
+            for (let x = x0; x <= x1; x++) {
+                if (x < 0 || x >= this.cols || y < 0 || y >= this.rows) continue;
+                if (material === 0) this.clearCell(x, y);
+                else this.setCell(x, y, color);
+            }
+        }
+        this.stoneDirty = true;
+        for (let x = x0 - 1; x <= x1 + 1; x++) if (x >= 0 && x < this.cols) this.dirtyColumns.add(x);
+    }
+
+    debugStoneShape(): { count: number; minX: number; maxX: number; minY: number; maxY: number } {
+        let count = 0, minX = this.cols, maxX = -1, minY = this.rows, maxY = -1;
+        for (let y = 0; y < this.rows; y++) {
+            for (let x = 0; x < this.cols; x++) {
+                if (materialOf(this.pixels[y * this.cols + x]) !== MATERIAL_STONE) continue;
+                count++;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+        return { count, minX, maxX, minY, maxY };
+    }
+
+    debugFallingBodies(): number { return this.stoneBodies.length; }
+    debugFillEnclosed(): void { this.fillEnclosedStone(); }
 
     handleResize(): void {
         const cssWidth = Math.max(1, this.canvas.clientWidth || window.innerWidth);
@@ -326,6 +393,9 @@ export class SandEngine {
         this.particles = [];
         this.gridDirty = true;
         for (let x = 0; x < this.cols; x++) this.dirtyColumns.add(x);
+        // A sandbox saved before stone had weight may hold ledges hanging in
+        // mid-air. Settle them now rather than playing out the collapse.
+        this.settleStoneImmediately();
         return true;
     }
 
@@ -383,8 +453,13 @@ export class SandEngine {
             this.charge = null;
         }
         if (this.pointerDown) gameAudio.stopPour();
+        const wasDrawingStone = this.brush === 'stone';
         this.pointerDown = false;
         this.lastPaint = null;
+        // A finished stone stroke is one shape: seal any pocket it closed off,
+        // then let the whole thing go at once.
+        if (wasDrawingStone) this.fillEnclosedStone();
+        this.stoneDirty = true;
     }
 
     private readonly frame = (now: number): void => {
@@ -431,6 +506,8 @@ export class SandEngine {
             });
         }
         this.shootingStars = this.shootingStars.filter((star) => now - star.bornAt < star.lifeMs);
+
+        this.updateStone(dt, now);
 
         // Re-check a rotating slice of terrain so a slope that settled outside
         // a dirty window still gets seen and can never freeze mid-slump.
@@ -1061,6 +1138,245 @@ export class SandEngine {
         });
     }
 
+    // ------------------------------------------------------------------ stone
+
+    // Stone moves as a rigid mass, so it is handled here rather than in the
+    // per-cell relaxation pass — which is exactly why the stone skip in
+    // relaxDirtyColumns must stay. A stone particle would run through
+    // settleSand and roll down slopes like a grain of sand.
+    private updateStone(dt: number, now: number): void {
+        if (this.cols === 0) return;
+
+        // Drawing a stone stroke would otherwise break into a dotted trail of
+        // separate blobs falling from different heights, because each dab is
+        // its own body the moment it is painted. Hold the world still until
+        // the player lifts, then let the whole shape go at once.
+        const painting = this.pointerDown && this.brush === 'stone';
+        if (painting) return;
+
+        if (this.stoneDirty || ++this.stoneScanTick >= STONE_RESCAN_EVERY_STEPS) {
+            this.stoneDirty = false;
+            this.stoneScanTick = 0;
+            this.rescanStoneBodies();
+        }
+        if (this.stoneBodies.length === 0) return;
+
+        const ctx = this.stoneContext();
+        // Lowest first, so a slab never tries to move into space another is
+        // still occupying.
+        this.stoneBodies.sort((a, b) => b.body.maxY - a.body.maxY);
+
+        const landed: FallingStone[] = [];
+        for (const falling of this.stoneBodies) {
+            falling.speed = Math.min(
+                STONE_MAX_ENCLOSED_FILL_CELLS,
+    STONE_MAX_FALL_CELLS_PER_S,
+    STONE_MAX_TIPS_PER_LANDING,
+                falling.speed + STONE_FALL_ACCEL_CELLS_PER_S2 * dt
+            );
+            falling.travel += falling.speed * dt;
+            let steps = Math.floor(falling.travel);
+            falling.travel -= steps;
+
+            // One cell per check: a slab must not tunnel through a thin floor.
+            while (steps-- > 0 && bodyCanDescend(ctx, falling.body)) {
+                this.descendStoneBody(falling.body);
+                falling.body = this.reindexBody(falling.body);
+            }
+            if (bodyCanDescend(ctx, falling.body)) continue; // still in the air
+
+            // It has touched down. If its weight hangs off the side of whatever
+            // it landed on, tip that way and let it carry on falling rather
+            // than balancing on a pinnacle.
+            const tip = bodyTipDirection(ctx, falling.body);
+            if (tip !== 0 && falling.tips < STONE_MAX_TIPS_PER_LANDING && bodyCanShift(ctx, falling.body, tip)) {
+                this.shiftStoneBody(falling.body, tip);
+                falling.body = this.shiftBodyIndex(falling.body, tip);
+                falling.tips++;
+                // Tipping bleeds momentum; it topples rather than rockets off.
+                falling.speed *= 0.5;
+                continue;
+            }
+            landed.push(falling);
+        }
+
+        for (const falling of landed) {
+            this.landStoneBody(falling, now);
+            this.stoneBodies.splice(this.stoneBodies.indexOf(falling), 1);
+        }
+    }
+
+    // Draw a closed ring of stone and the pocket inside it turns solid, so a
+    // loop reads as one boulder rather than a hollow shell. Only stone walls
+    // count — the screen edge does not — so nothing fills until the ring
+    // genuinely closes.
+    private fillEnclosedStone(): void {
+        if (this.cols === 0) return;
+        const enclosed = findEnclosedCells(this.stoneContext(), STONE_MAX_ENCLOSED_FILL_CELLS);
+        if (enclosed.length === 0) return;
+        for (const index of enclosed) {
+            const x = index % this.cols;
+            const y = (index - x) / this.cols;
+            this.setCell(x, y, this.stoneColor());
+            this.markDirtyAround(x);
+        }
+        this.stoneDirty = true;
+    }
+
+    private stoneContext(): StoneContext {
+        return {
+            cols: this.cols,
+            rows: this.rows,
+            materialAt: (x, y) => materialOf(this.pixels[y * this.cols + x])
+        };
+    }
+
+    // Rebuilds the list of unsupported masses, carrying each one's fall speed
+    // across by its minIndex — which shifts by exactly cols per row descended,
+    // so a body that is mid-fall keeps its momentum. A miss just resets to
+    // rest, which is a harmless failure mode.
+    private rescanStoneBodies(): void {
+        const previous = new Map<number, number>();
+        for (const falling of this.stoneBodies) previous.set(falling.body.minIndex, falling.speed);
+
+        // Tracks anything not at rest — falling bodies AND ones still toppling
+        // off a perch, which are grounded and so would otherwise be dropped.
+        this.stoneBodies = findUnstableBodies(this.stoneContext()).map((body) => ({
+            body,
+            speed: previous.get(body.minIndex) ?? 0,
+            travel: 0,
+            tips: 0
+        }));
+    }
+
+    // Drops a body one row. Walking rows bottom-up is what makes this safe
+    // without a snapshot: the cell below has already been vacated. Whatever
+    // each vertical run swallows is lifted out to the top of that run, so a
+    // slab sinking through a pool pushes the water up over itself instead of
+    // deleting it.
+    private descendStoneBody(body: StoneBody): void {
+        const runs = bodyRuns(body);
+        const swallowed = runs.map((run) => this.pixelAt(run.x, run.yBot + 1));
+
+        for (const { y, xs } of body.rowsDescending) {
+            for (const x of xs) {
+                this.setCell(x, y + 1, this.pixelAt(x, y));
+            }
+        }
+        runs.forEach((run, i) => {
+            const lifted = swallowed[i];
+            if (lifted === 0) this.clearCell(run.x, run.yTop);
+            else this.setCell(run.x, run.yTop, lifted);
+            this.markDirtyAround(run.x);
+        });
+    }
+
+    // Slides a body one column sideways. Mirror of descendStoneBody: walk each
+    // row from the leading edge back so a cell is only written once the one
+    // ahead has moved, and hand whatever the run swallows back out at its tail.
+    private shiftStoneBody(body: StoneBody, dir: -1 | 1): void {
+        const runs = bodyRowRuns(body);
+        const swallowed = runs.map((run) =>
+            dir === 1 ? this.pixelAt(run.xRight + 1, run.y) : this.pixelAt(run.xLeft - 1, run.y)
+        );
+
+        for (const { y, xs } of body.rowsDescending) {
+            const ordered = [...xs].sort((a, b) => (dir === 1 ? b - a : a - b));
+            for (const x of ordered) {
+                this.setCell(x + dir, y, this.pixelAt(x, y));
+            }
+        }
+        runs.forEach((run, i) => {
+            const tail = dir === 1 ? run.xLeft : run.xRight;
+            const lifted = swallowed[i];
+            if (lifted === 0) this.clearCell(tail, run.y);
+            else this.setCell(tail, run.y, lifted);
+            this.markDirtyAround(tail);
+        });
+    }
+
+    private shiftBodyIndex(body: StoneBody, dir: -1 | 1): StoneBody {
+        const cells = new Set<number>();
+        for (const index of Array.from(body.cells)) cells.add(index + dir);
+        return {
+            minIndex: body.minIndex + dir,
+            maxY: body.maxY,
+            size: body.size,
+            rowsDescending: body.rowsDescending.map(({ y, xs }) => ({
+                y,
+                xs: xs.map((x) => x + dir)
+            })),
+            cells
+        };
+    }
+
+    // Shifts a body's own bookkeeping down a row so it can keep falling
+    // without a full rescan of the grid.
+    private reindexBody(body: StoneBody): StoneBody {
+        const cells = new Set<number>();
+        for (const index of Array.from(body.cells)) cells.add(index + this.cols);
+        return {
+            minIndex: body.minIndex + this.cols,
+            maxY: body.maxY + 1,
+            size: body.size,
+            rowsDescending: body.rowsDescending.map(({ y, xs }) => ({ y: y + 1, xs })),
+            cells
+        };
+    }
+
+    // A silent drop reads as a rendering glitch, so sell the mass: shake the
+    // screen and throw dust along the contact edge.
+    private landStoneBody(falling: FallingStone, now: number): void {
+        if (falling.speed < STONE_MAX_FALL_CELLS_PER_S * 0.25) return; // a nudge, not an impact
+        const impact = falling.speed / STONE_MAX_FALL_CELLS_PER_S;
+        const heft = Math.min(1, falling.body.size / 400);
+
+        this.shakeMagnitude = Math.min(STONE_LANDING_SHAKE_MAX, 1.5 + impact * heft * 9);
+        this.shakeUntil = now + SHAKE_DURATION_MS;
+
+        const bottom = falling.body.rowsDescending[0];
+        if (bottom) {
+            const count = Math.min(STONE_LANDING_SPARKS_MAX, bottom.xs.length);
+            for (let i = 0; i < count; i++) {
+                const x = bottom.xs[Math.floor((i / count) * bottom.xs.length)];
+                this.sparks.push({
+                    x: (x + 0.5) * CELL,
+                    y: (bottom.y + 1) * CELL,
+                    vx: (Math.random() - 0.5) * 90,
+                    vy: -30 - Math.random() * 60,
+                    bornAt: now,
+                    lifeMs: 260 + Math.random() * 260,
+                    hue: 40
+                });
+            }
+        }
+        gameAudio.explosion(Math.min(1, impact * heft * 0.7));
+        vibrate(Math.round(30 + impact * heft * 60));
+    }
+
+    // Used on load and resize: settle everything at once so an old sandbox's
+    // floating stone does not play a second of slow-motion demolition.
+    private settleStoneImmediately(): void {
+        if (this.cols === 0) return;
+        const ctx = this.stoneContext();
+        for (let pass = 0; pass < 200; pass++) {
+            const bodies = findFloatingBodies(ctx);
+            if (bodies.length === 0) break;
+            bodies.sort((a, b) => b.maxY - a.maxY);
+            let moved = false;
+            for (let body of bodies) {
+                while (bodyCanDescend(ctx, body)) {
+                    this.descendStoneBody(body);
+                    body = this.reindexBody(body);
+                    moved = true;
+                }
+            }
+            if (!moved) break;
+        }
+        this.stoneBodies = [];
+        this.stoneDirty = false;
+    }
+
     // ------------------------------------------------------------------- life
 
     private isWaterAtPx = (px: number, py: number): boolean => {
@@ -1110,7 +1426,14 @@ export class SandEngine {
     // A clam or starfish only keeps its spot while sitting on the bed under water.
     private bedLifeStillSubmerged(dweller: BedDweller): boolean {
         const surface = this.surfaceOf(dweller.col);
-        if (surface >= this.rows || surface <= 0 || Math.abs(surface - dweller.y) > 1) return false;
+        if (surface >= this.rows || surface <= 0) return false;
+        // A slab drifting overhead makes surfaceOf report its top, far above
+        // the dweller. That is something passing over, not the bed dropping
+        // away, so keep the seat and just check it is still underwater.
+        if (surface < dweller.y - 1) {
+            return materialOf(this.pixelAt(dweller.col, dweller.y - 1)) === MATERIAL_WATER;
+        }
+        if (surface > dweller.y + 1) return false; // the bed really did erode away
         dweller.y = surface;
         return materialOf(this.pixelAt(dweller.col, surface - 1)) === MATERIAL_WATER;
     }
@@ -1413,6 +1736,7 @@ export class SandEngine {
                 if (Math.hypot(x - centerX, y - centerY) > STONE_BRUSH_RADIUS_CELLS) continue;
                 if (this.pixels[y * this.cols + x] !== 0) continue;
                 this.setCell(x, y, this.stoneColor());
+                this.stoneDirty = true;
             }
         }
     }
@@ -1433,6 +1757,7 @@ export class SandEngine {
             }
         }
         if (erased) {
+            this.stoneDirty = true;
             for (let x = centerX - span - 1; x <= centerX + span + 1; x++) {
                 if (x >= 0 && x < this.cols) this.dirtyColumns.add(x);
             }
@@ -1481,6 +1806,9 @@ export class SandEngine {
         for (let x = cellX - radiusCells - 2; x <= cellX + radiusCells + 2; x++) {
             if (x >= 0 && x < this.cols) this.dirtyColumns.add(x);
         }
+        // The blast cannot break stone, but clearing the sand out from under an
+        // overhang is exactly what sets one falling.
+        this.stoneDirty = true;
 
         const px = (cellX + 0.5) * CELL;
         const py = (cellY + 0.5) * CELL;
