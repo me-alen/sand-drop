@@ -17,6 +17,7 @@ const GRID_KEY = 'pour-an-ocean/grid';
 const SETTINGS_KEY = 'pour-an-ocean/settings';
 // Keys used before the project was renamed. Read once so an existing sandbox
 // survives the rename instead of coming back empty.
+const SIGHTINGS_KEY = 'pour-an-ocean/sightings';
 const LEGACY_GRID_KEY = 'sand-drop/grid';
 const LEGACY_SETTINGS_KEY = 'sand-drop/settings';
 
@@ -104,6 +105,28 @@ export const clearGrid = (): void => {
     try {
         window.localStorage.removeItem(GRID_KEY);
         window.localStorage.removeItem(LEGACY_GRID_KEY);
+    } catch {
+        // ignore
+    }
+};
+
+// Species the player has ever attracted. Kept separate from the sandbox so a
+// reset does not wipe the log.
+export const loadSightings = (): string[] => {
+    try {
+        const raw = window.localStorage.getItem(SIGHTINGS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw) as unknown;
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((entry): entry is string => typeof entry === 'string');
+    } catch {
+        return [];
+    }
+};
+
+export const saveSightings = (kinds: string[]): void => {
+    try {
+        window.localStorage.setItem(SIGHTINGS_KEY, JSON.stringify(kinds));
     } catch {
         // ignore
     }

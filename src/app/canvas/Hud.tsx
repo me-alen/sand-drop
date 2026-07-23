@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { Brush } from './engine';
+import { CREATURE_LABELS, CREATURE_ORDER, CreatureKind, HABITAT_HINTS } from './life';
 
 // The HUD sits inside the pointer-driven scene, so swallow pointer events
 // before they reach the sand canvas underneath.
@@ -10,8 +11,58 @@ const BRUSHES: { kind: Brush; label: string }[] = [
     { kind: 'sand', label: 'Sand' },
     { kind: 'water', label: 'Water' },
     { kind: 'stone', label: 'Stone' },
+    { kind: 'lava', label: 'Lava' },
     { kind: 'erase', label: 'Erase' }
 ];
+
+type SpeciesLogProps = {
+    open: boolean;
+    onToggle: () => void;
+    sighted: Set<CreatureKind>;
+    present: Set<CreatureKind>;
+};
+
+// Surfaces the habitat rules, which are otherwise invisible: the ocean quietly
+// decides what can live in it, and without this the player has no way to know
+// that filling it further is what brings the bigger animals in.
+export const SpeciesLog = ({
+    open,
+    onToggle,
+    sighted,
+    present
+}: SpeciesLogProps): React.JSX.Element => (
+    <div className="species-log" onPointerDown={stopPointer} onPointerUp={stopPointer}>
+        <button
+            type="button"
+            className="hud-button species-log__toggle"
+            aria-expanded={open}
+            onClick={onToggle}
+        >
+            🐟 {sighted.size}/{CREATURE_ORDER.length}
+        </button>
+        {open && (
+            <ul className="species-log__list">
+                {CREATURE_ORDER.map((kind) => {
+                    const seen = sighted.has(kind);
+                    const here = present.has(kind);
+                    return (
+                        <li
+                            key={kind}
+                            className={`species-log__row ${seen ? '' : 'species-log__row--unseen'}`}
+                        >
+                            <span className="species-log__name">
+                                {seen ? CREATURE_LABELS[kind] : '???'}
+                            </span>
+                            <span className="species-log__note">
+                                {here ? 'here now' : seen ? 'seen' : HABITAT_HINTS[kind]}
+                            </span>
+                        </li>
+                    );
+                })}
+            </ul>
+        )}
+    </div>
+);
 
 type TopBarProps = {
     brush: Brush;

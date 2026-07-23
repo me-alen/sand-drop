@@ -13,6 +13,8 @@
 import {
     MATERIAL_CORAL,
     MATERIAL_KELP,
+    MATERIAL_GLASS,
+    MATERIAL_LAVA,
     MATERIAL_PACKED_SAND,
     MATERIAL_SAND,
     MATERIAL_STONE,
@@ -42,9 +44,13 @@ export type StoneBody = {
 
 export const isStoneMaterial = (material: number): boolean => material === MATERIAL_STONE;
 
-// What can hold a slab up. Water and flora cannot; sand and packed sand can.
+// What can hold a slab up. Water and flora cannot; sand, packed sand and the
+// thick body of lava can.
 const isGround = (material: number): boolean =>
-    material === MATERIAL_SAND || material === MATERIAL_PACKED_SAND;
+    material === MATERIAL_SAND ||
+    material === MATERIAL_PACKED_SAND ||
+    material === MATERIAL_LAVA ||
+    material === MATERIAL_GLASS;
 
 // What a slab can move into, crushing or displacing it.
 const isPassable = (material: number): boolean =>

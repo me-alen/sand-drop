@@ -11,6 +11,12 @@ export const MAX_FALL_SPEED_CELLS_PER_S = 110;
 export const MIN_EXPLOSION_RADIUS_CELLS = 3;
 export const MAX_EXPLOSION_RADIUS_CELLS = 16;
 export const EXPLOSION_FULL_CHARGE_MS = 1200;
+// Stone shrugs off a small bang, but a heavy charge fractures it. Only the
+// inner part of a big blast breaks rock, so the crater is a bite out of the
+// mass rather than the whole radius — and whatever is left overhanging then
+// has to hold itself up, which is where the falling comes in.
+export const STONE_FRACTURE_MIN_RADIUS_CELLS = 9;
+export const STONE_FRACTURE_RADIUS_RATIO = 0.55;
 
 export const INITIAL_SAND_HEIGHT_RATIO = 0.04;
 export const INITIAL_SAND_BASE_HUE = 40;
@@ -26,6 +32,7 @@ export const MATERIAL_STONE = 0xfd;
 export const MATERIAL_WATER = 0xfc;
 export const MATERIAL_KELP = 0xfb;
 export const MATERIAL_CORAL = 0xfa;
+export const MATERIAL_LAVA = 0xf9;
 
 export const WATER_HUE = 205;
 export const WATER_SATURATION = 82;
@@ -34,6 +41,55 @@ export const WATER_FLOW_HOPS_PER_TICK = 8;
 export const WATER_MAX_FLOW_HOPS = 400;
 // How far along the pool surface a grain searches for a spot to drop into.
 export const WATER_LEVEL_SCAN_RANGE = 64;
+
+// Lava is a liquid, but a thick one: it creeps where water rushes. Solids rest
+// on it rather than sinking, which keeps it out of the displacement paths.
+export const LAVA_HUE = 20;
+export const LAVA_SATURATION = 100;
+export const LAVA_LIGHTNESS_MIN = 48;
+export const LAVA_LIGHTNESS_MAX = 62;
+export const LAVA_TERMINAL_FALL_CELLS_PER_S = 20;
+export const LAVA_FLOW_HOPS_PER_TICK = 2;
+// A thick flow does not sheet across the world looking for the lowest point
+// the way water does; it stalls and piles up near where it lands. Without this
+// cap lava ran the whole width of the scene before settling, so it never sat
+// on sand long enough to leave a glassy crust.
+export const LAVA_MAX_FLOW_HOPS = 26;
+// Meeting water chills lava into fresh stone and boils the water off.
+export const LAVA_QUENCH_SPARKS = 5;
+
+// ------------------------------------------------------------------- heat
+// Lava carries heat in a field alongside the grid, and everything thermal
+// follows from it: rock does not switch to stone the instant it touches water,
+// it loses heat until there is none left. Heat also conducts on through sand
+// and the glass it has already made, so a flow bakes its way downward one
+// layer at a time instead of vitrifying a single skin.
+export const HEAT_TICK_MS = 90;
+export const LAVA_HEAT_MAX = 255;
+// Losses per tick. Lava buried in more lava barely cools; open air draws it
+// off steadily; water rips it away.
+export const LAVA_COOL_PER_TICK = 1;
+export const LAVA_COOL_PER_AIR_NEIGHBOUR = 3;
+export const LAVA_COOL_PER_WATER_NEIGHBOUR = 70;
+export const WATER_BOIL_CHANCE_PER_TICK = 0.5;
+// Heat given up crossing one cell. With the threshold below this is what
+// decides how many layers of glass a flow can bake before it runs out.
+export const HEAT_CONDUCTION_LOSS = 42;
+export const HEAT_AMBIENT_COOL = 7;
+export const SAND_TO_GLASS_HEAT = 70;
+// Freshly cooled lava is near-black basalt, much darker than the grey outcrop,
+// so a flow leaves a visible scar rather than blending in.
+export const COOLED_LAVA_HUE = 18;
+export const COOLED_LAVA_SATURATION = 16;
+export const COOLED_LAVA_LIGHTNESS_MIN = 17;
+export const COOLED_LAVA_LIGHTNESS_MAX = 27;
+
+// Sand touched by lava vitrifies: a pale, glassy crust down the edge of a flow.
+export const MATERIAL_GLASS = 0xf8;
+export const GLASS_HUE = 186;
+export const GLASS_SATURATION = 38;
+export const GLASS_LIGHTNESS_MIN = 70;
+export const GLASS_LIGHTNESS_MAX = 84;
 
 export const STONE_HUE = 222;
 export const STONE_SATURATION = 8;
@@ -193,6 +249,17 @@ export const SWIMMER_RETARGET_MIN_MS = 4000;
 export const SWIMMER_RETARGET_MAX_MS = 11000;
 
 export const CLAM_OPEN_PERIOD_MS = 5200;
+
+// Sharks run down fish, fish scatter from sharks, and fish keep company with
+// each other. Steering only re-aims a swimmer's chosen depth and heading; the
+// wandering underneath it is unchanged.
+export const SWIMMER_HUNT_RANGE_PX = 190;
+export const SWIMMER_FLEE_RANGE_PX = 120;
+export const SWIMMER_SCHOOL_RANGE_PX = 90;
+export const SWIMMER_SCHOOL_URGENCY = 0.5;
+// How often the school re-reads its neighbours. Every frame is wasted work for
+// motion this slow.
+export const SWIMMER_STEER_EVERY_STEPS = 6;
 
 // Bubbles rising off the reef are a render effect, not grid cells.
 export const MAX_BUBBLES = 120;

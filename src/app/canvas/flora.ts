@@ -32,6 +32,7 @@ import {
     KELP_SATURATION,
     KELP_SEED_CHANCE,
     MATERIAL_CORAL,
+    MATERIAL_GLASS,
     MATERIAL_KELP,
     MATERIAL_PACKED_SAND,
     MATERIAL_SAND,
@@ -57,7 +58,10 @@ export const isFlora = (material: number): boolean =>
     material === MATERIAL_KELP || material === MATERIAL_CORAL;
 
 const isBed = (material: number): boolean =>
-    material === MATERIAL_SAND || material === MATERIAL_PACKED_SAND || material === MATERIAL_STONE;
+    material === MATERIAL_SAND ||
+    material === MATERIAL_PACKED_SAND ||
+    material === MATERIAL_STONE ||
+    material === MATERIAL_GLASS;
 
 // Deterministic pseudo-random in [0,1) for an integer. Column traits (kelp
 // target height, coral hue, coral patches) are derived from this rather than

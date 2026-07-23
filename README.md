@@ -19,9 +19,15 @@ set off charged explosions, on desktop or on your phone.
   - **Sand** — pours, piles, and avalanches when slopes get too steep
   - **Water** — flows sideways, levels out, and gets displaced when sand sinks
     through it
-  - **Stone** — paint solid ledges and shelters; immune to explosions
+  - **Stone** — paint solid shapes; shrugs off a small blast but not a big one
+  - **Lava** — creeps like a thick liquid, chills into dark basalt where it
+    meets water, vitrifies the sand it runs over into **glass**, and burns off
+    anything growing beside it
   - **Kelp** and **coral** — grow on their own in standing water
   - **Eraser** — dig tunnels and carve terrain
+- Stone has weight: undermine a ledge and the whole connected mass drops as one
+  rigid slab, tipping off a narrow perch instead of balancing on it, and a
+  closed loop of stone fills solid. A heavy enough blast cracks rock apart
 - A living seabed: flood a deep enough pool and it seeds itself
   - Kelp rises to its own height, up to 80% of the local depth, so the bed has
     a ragged silhouette instead of one flat line
@@ -35,7 +41,9 @@ set off charged explosions, on desktop or on your phone.
     third of the scene under water; a whale will only show up once more than
     half of it is deep ocean
   - Everything that swims roams the whole body of water rather than pacing
-    one spot
+    one spot; sharks run down fish, fish scatter from sharks and shoal together
+  - A species log in the corner tracks what you have attracted and hints at
+    what the ones you have not still need
   - One large rock outcrop per session, rooted to the bottom, in one of three
     shapes at a random size
 - A five-minute day: sunrise, an arcing sun, sunset, then a moon and stars
@@ -57,12 +65,13 @@ set off charged explosions, on desktop or on your phone.
 
 ## Controls
 
-- **Tap / click / drag**: use the selected brush (sand, water, stone, erase)
+- **Tap / click / drag**: use the selected brush (sand, water, stone, lava, erase)
 - **Hold on solid ground** (sand brush): charge an explosion, release to
   detonate — longer hold, bigger blast
 - **Arrow Up / Down** or the **− / + pill**: change grains per drop
 - **Top-left**: pick the material brush and the grains-per-drop count
 - **Top-right**: mute, tilt gravity (touch devices), share snapshot, reset
+- **Bottom-left**: the species log — how many of the ten you have attracted
 
 ## Tech Stack
 
@@ -88,7 +97,9 @@ src/
     sky.ts                  # Day/night phase, sky gradient, sun and moon arcs
     flora.ts                # Kelp and coral: seeding, growth caps, die-back
     rocks.ts                # The seabed's rock outcrop
-    life.ts                 # Aquatic species: habitats, sprites, movement
+    life.ts                 # Aquatic species: habitats, sprites, movement, steering
+    stone.ts                # Rigid-body stone: support, descent, tipping, enclosures
+    testHarness.ts          # Headless engine for tests (stubs the 2D context)
     Hud.tsx                 # Material picker, counters, toggles
     InstructionOverlay.tsx  # On-screen instruction UI
   service-worker.ts         # Workbox service worker (offline/PWA)

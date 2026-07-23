@@ -75,6 +75,49 @@ export const HABITATS: Record<CreatureKind, Habitat> = {
     whale: { minWaterFraction: 0.55, minDepthCells: 42, max: 1, per10kWaterCells: 0.3 }
 };
 
+// Shown in the log next to a species you have not attracted yet, so the way to
+// get it is legible instead of guesswork.
+export const HABITAT_HINTS: Record<CreatureKind, string> = {
+    fish: 'a puddle will do',
+    clam: 'any shallow bed',
+    starfish: 'any shallow bed',
+    crab: 'a little more water',
+    squid: 'a proper pool',
+    octopus: 'a proper pool',
+    jellyfish: 'real depth',
+    turtle: 'a wide, deep pool',
+    shark: 'a third of the scene flooded',
+    whale: 'over half, and deep'
+};
+
+export const CREATURE_LABELS: Record<CreatureKind, string> = {
+    fish: 'Fish',
+    clam: 'Clam',
+    starfish: 'Starfish',
+    crab: 'Crab',
+    squid: 'Squid',
+    octopus: 'Octopus',
+    jellyfish: 'Jellyfish',
+    turtle: 'Turtle',
+    shark: 'Shark',
+    whale: 'Whale'
+};
+
+// Ordered as they arrive while an ocean fills, which is the order worth
+// showing them in.
+export const CREATURE_ORDER: CreatureKind[] = [
+    'fish',
+    'clam',
+    'starfish',
+    'crab',
+    'squid',
+    'octopus',
+    'jellyfish',
+    'turtle',
+    'shark',
+    'whale'
+];
+
 export type WaterStats = {
     cells: number; // water cells in the grid
     fraction: number; // share of the whole grid that is water
@@ -237,6 +280,84 @@ export type SwimmerTuning = {
     roamRange: number;
     retargetMinMs: number;
     retargetMaxMs: number;
+};
+
+// Who eats whom, and who keeps company with whom. Everything else simply
+// wanders.
+export const isPredator = (kind: SwimmerKind): boolean => kind === 'shark';
+export const isPrey = (kind: SwimmerKind): boolean => kind === 'fish';
+
+export type Steering = {
+    /** Nearest fish for a hunter to run down, if one is close enough. */
+    huntRangePx: number;
+    /** How near a predator has to be before prey break and scatter. */
+    fleeRangePx: number;
+    /** How near two fish have to be to keep company. */
+    schoolRangePx: number;
+    /** Pull of a steering urge on the swimmer's chosen depth, 0..1. */
+    urgency: number;
+};
+
+// Picks the depth a swimmer should be heading for, given who is nearby. Prey
+// bolting away from a hunter overrides everything; otherwise a hunter closes on
+// its target, and a fish drifts toward the company of its neighbours. Returns
+// null when nothing nearby is worth reacting to.
+export const steerTowardNeighbours = (
+    swimmer: Swimmer,
+    others: Swimmer[],
+    steering: Steering
+): { targetY: number; dir: 1 | -1 } | null => {
+    let nearestPredator: Swimmer | null = null;
+    let nearestPredatorDistance = Infinity;
+    let nearestPrey: Swimmer | null = null;
+    let nearestPreyDistance = Infinity;
+    let schoolY = 0;
+    let schoolX = 0;
+    let schoolCount = 0;
+
+    for (const other of others) {
+        if (other === swimmer) continue;
+        const dx = other.x - swimmer.x;
+        const dy = other.y - swimmer.y;
+        const distance = Math.hypot(dx, dy);
+
+        if (isPrey(swimmer.kind) && isPredator(other.kind) && distance < nearestPredatorDistance) {
+            nearestPredator = other;
+            nearestPredatorDistance = distance;
+        }
+        if (isPredator(swimmer.kind) && isPrey(other.kind) && distance < nearestPreyDistance) {
+            nearestPrey = other;
+            nearestPreyDistance = distance;
+        }
+        if (isPrey(swimmer.kind) && isPrey(other.kind) && distance < steering.schoolRangePx) {
+            schoolY += other.y;
+            schoolX += other.x;
+            schoolCount++;
+        }
+    }
+
+    // Bolting beats everything else a fish might be doing.
+    if (nearestPredator && nearestPredatorDistance < steering.fleeRangePx) {
+        const away = swimmer.y - nearestPredator.y;
+        return {
+            targetY: swimmer.y + (away >= 0 ? 1 : -1) * steering.fleeRangePx,
+            dir: nearestPredator.x > swimmer.x ? -1 : 1
+        };
+    }
+
+    if (nearestPrey && nearestPreyDistance < steering.huntRangePx) {
+        return { targetY: nearestPrey.y, dir: nearestPrey.x > swimmer.x ? 1 : -1 };
+    }
+
+    if (schoolCount > 0) {
+        const meanY = schoolY / schoolCount;
+        const meanX = schoolX / schoolCount;
+        return {
+            targetY: swimmer.y + (meanY - swimmer.y) * steering.urgency,
+            dir: meanX > swimmer.x ? 1 : -1
+        };
+    }
+    return null;
 };
 
 // Advances one swimmer. Returns false when it is stranded (its water drained)

@@ -10,9 +10,14 @@ import {
     ERASE_BRUSH_RADIUS_CELLS,
     EXPLOSION_FULL_CHARGE_MS,
     SWIMMER_BOB_PX_PER_S,
+    SWIMMER_FLEE_RANGE_PX,
+    SWIMMER_HUNT_RANGE_PX,
     SWIMMER_RETARGET_MAX_MS,
     SWIMMER_RETARGET_MIN_MS,
     SWIMMER_ROAM_RANGE_PX,
+    SWIMMER_SCHOOL_RANGE_PX,
+    SWIMMER_SCHOOL_URGENCY,
+    SWIMMER_STEER_EVERY_STEPS,
     SWIMMER_TURN_CHANCE_PER_S,
     SWIMMER_VERTICAL_SPEED_PX_PER_S,
     FLORA_COLUMNS_PER_TICK,
@@ -20,7 +25,34 @@ import {
     GRAVITY_CELLS_PER_S2,
     INITIAL_SAND_BASE_HUE,
     INITIAL_SAND_HEIGHT_RATIO,
+    LAVA_FLOW_HOPS_PER_TICK,
+    LAVA_HUE,
+    LAVA_LIGHTNESS_MAX,
+    LAVA_LIGHTNESS_MIN,
+    LAVA_MAX_FLOW_HOPS,
+    COOLED_LAVA_HUE,
+    COOLED_LAVA_LIGHTNESS_MAX,
+    COOLED_LAVA_LIGHTNESS_MIN,
+    COOLED_LAVA_SATURATION,
+    GLASS_HUE,
+    GLASS_LIGHTNESS_MAX,
+    GLASS_LIGHTNESS_MIN,
+    GLASS_SATURATION,
+    LAVA_QUENCH_SPARKS,
+    LAVA_COOL_PER_AIR_NEIGHBOUR,
+    LAVA_COOL_PER_TICK,
+    LAVA_COOL_PER_WATER_NEIGHBOUR,
+    LAVA_HEAT_MAX,
+    HEAT_AMBIENT_COOL,
+    HEAT_CONDUCTION_LOSS,
+    HEAT_TICK_MS,
+    SAND_TO_GLASS_HEAT,
+    WATER_BOIL_CHANCE_PER_TICK,
+    LAVA_SATURATION,
+    LAVA_TERMINAL_FALL_CELLS_PER_S,
     MATERIAL_KELP,
+    MATERIAL_GLASS,
+    MATERIAL_LAVA,
     MATERIAL_PACKED_SAND,
     MATERIAL_SAND,
     MATERIAL_STONE,
@@ -38,6 +70,8 @@ import {
     SETTLE_SWEEP_COLUMNS_PER_STEP,
     SPAWN_INTERVAL_MS,
     SQUARE_SIZE,
+    STONE_FRACTURE_MIN_RADIUS_CELLS,
+    STONE_FRACTURE_RADIUS_RATIO,
     STONE_BRUSH_RADIUS_CELLS,
     STONE_FALL_ACCEL_CELLS_PER_S2,
     STONE_HUE,
@@ -78,6 +112,7 @@ import {
     spriteWidth,
     STARFISH_SPRITE,
     stepCrawler,
+    steerTowardNeighbours,
     stepSwimmer,
     Swimmer,
     SwimmerKind,
@@ -109,6 +144,11 @@ const MAX_CATCHUP_STEPS = 6;
 const TWO_PI = Math.PI * 2;
 const SHAKE_DURATION_MS = 260;
 const SPARK_GRAVITY_PX_PER_S2 = 900;
+
+// Anything that flows and finds its own level. Solids rest on lava rather than
+// sinking through it, which keeps it clear of the displacement machinery.
+const isLiquid = (material: number): boolean =>
+    material === MATERIAL_WATER || material === MATERIAL_LAVA;
 
 // Every species the ocean can hold, grouped by how it gets about.
 const SWIMMER_KINDS: SwimmerKind[] = ['fish', 'squid', 'jellyfish', 'turtle', 'shark', 'whale'];
@@ -146,7 +186,7 @@ type Bubble = { x: number; y: number; wobblePhase: number; wobbleSpeed: number; 
 type FallingStone = { body: StoneBody; speed: number; travel: number; tips: number };
 type ChargeState = { cellX: number; cellY: number; startMs: number };
 
-export type Brush = 'sand' | 'water' | 'stone' | 'erase';
+export type Brush = 'sand' | 'water' | 'stone' | 'lava' | 'erase';
 export type PointerAction = 'charge' | 'pour';
 
 export class SandEngine {
@@ -164,6 +204,13 @@ export class SandEngine {
     private cssHeight = 0;
     private gridImage: ImageData | null = null;
     private pixels: Uint32Array = new Uint32Array(0);
+    // Heat per cell, parallel to `pixels`. Lava is the only source; sand and
+    // glass merely carry it. `heatPrevious` snapshots the field each tick so
+    // conduction spreads exactly one cell per tick — reading and writing the
+    // same array would let heat race across the whole flow in a single pass.
+    private heat: Uint8Array = new Uint8Array(0);
+    private heatPrevious: Uint8Array = new Uint8Array(0);
+    private lastHeatTickMs = 0;
     private gridDirty = true;
 
     private particles: Particle[] = [];
@@ -201,6 +248,8 @@ export class SandEngine {
     private stoneBodies: FallingStone[] = [];
     private stoneDirty = true;
     private stoneScanTick = 0;
+
+    private steerTick = 0;
 
     private lastFloraTickMs = 0;
     private floraCursor = 0;
@@ -278,46 +327,6 @@ export class SandEngine {
         this.buildCastle();
     }
 
-    // TEMP: verification helpers.
-    debugClear(): void {
-        this.pixels.fill(0);
-        for (let x = 0; x < this.cols; x++) this.dirtyColumns.add(x);
-    }
-
-    debugFill(x0: number, y0: number, x1: number, y1: number, material: number): void {
-        const color =
-            material === MATERIAL_STONE ? this.stoneColor()
-            : material === MATERIAL_WATER ? this.waterColor()
-            : this.pureSandColor();
-        for (let y = y0; y <= y1; y++) {
-            for (let x = x0; x <= x1; x++) {
-                if (x < 0 || x >= this.cols || y < 0 || y >= this.rows) continue;
-                if (material === 0) this.clearCell(x, y);
-                else this.setCell(x, y, color);
-            }
-        }
-        this.stoneDirty = true;
-        for (let x = x0 - 1; x <= x1 + 1; x++) if (x >= 0 && x < this.cols) this.dirtyColumns.add(x);
-    }
-
-    debugStoneShape(): { count: number; minX: number; maxX: number; minY: number; maxY: number } {
-        let count = 0, minX = this.cols, maxX = -1, minY = this.rows, maxY = -1;
-        for (let y = 0; y < this.rows; y++) {
-            for (let x = 0; x < this.cols; x++) {
-                if (materialOf(this.pixels[y * this.cols + x]) !== MATERIAL_STONE) continue;
-                count++;
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-            }
-        }
-        return { count, minX, maxX, minY, maxY };
-    }
-
-    debugFallingBodies(): number { return this.stoneBodies.length; }
-    debugFillEnclosed(): void { this.fillEnclosedStone(); }
-
     handleResize(): void {
         const cssWidth = Math.max(1, this.canvas.clientWidth || window.innerWidth);
         const cssHeight = Math.max(1, this.canvas.clientHeight || window.innerHeight);
@@ -358,6 +367,10 @@ export class SandEngine {
         this.rows = newRows;
         this.gridImage = newImage;
         this.pixels = newPixels;
+        // Heat is not carried across a resize; the next tick re-seeds any lava
+        // it finds back to full, which is close enough and much simpler.
+        this.heat = new Uint8Array(newCols * newRows);
+        this.heatPrevious = new Uint8Array(newCols * newRows);
         this.gridDirty = true;
 
         this.particles = this.particles.filter((p) => p.x < newCols);
@@ -365,6 +378,15 @@ export class SandEngine {
             particle.y = Math.min(particle.y, newRows - 1);
         }
         for (let x = 0; x < newCols; x++) this.dirtyColumns.add(x);
+    }
+
+    // Which species are in the world right now, for the log in the HUD.
+    presentSpecies(): CreatureKind[] {
+        const kinds = new Set<CreatureKind>();
+        for (const swimmer of this.swimmers) kinds.add(swimmer.kind);
+        for (const crawler of this.crawlers) kinds.add(crawler.kind);
+        for (const dweller of this.bedLife) kinds.add(dweller.kind);
+        return Array.from(kinds);
     }
 
     setTilt(ratio: number): void {
@@ -432,6 +454,7 @@ export class SandEngine {
         this.lastPaint = null;
         this.applyBrush(cssX, cssY);
         if (this.brush === 'sand' || this.brush === 'water') gameAudio.startPour(this.brush);
+        else if (this.brush === 'lava') gameAudio.startPour('water');
         return 'pour';
     }
 
@@ -507,6 +530,14 @@ export class SandEngine {
         }
         this.shootingStars = this.shootingStars.filter((star) => now - star.bornAt < star.lifeMs);
 
+        // Heat runs on its own slow clock: lava conducts warmth into the sand
+        // and glass around it, baking successive layers to glass and finally
+        // setting itself into basalt once it has none left to give.
+        if (now - this.lastHeatTickMs >= HEAT_TICK_MS) {
+            this.lastHeatTickMs = now;
+            this.updateHeat(now);
+        }
+
         this.updateStone(dt, now);
 
         // Re-check a rotating slice of terrain so a slope that settled outside
@@ -565,7 +596,7 @@ export class SandEngine {
     }
 
     private moveParticle(p: Particle, dt: number): boolean {
-        if (p.color >>> 24 === MATERIAL_WATER) return this.moveWaterParticle(p, dt);
+        if (isLiquid(p.color >>> 24)) return this.moveLiquidParticle(p, dt);
         return this.moveSandParticle(p, dt);
     }
 
@@ -633,12 +664,18 @@ export class SandEngine {
         return true;
     }
 
-    private moveWaterParticle(p: Particle, dt: number): boolean {
+    // Water and lava share this: both flow, level and pool. Lava simply does
+    // it slower and creeps a shorter distance each tick.
+    private moveLiquidParticle(p: Particle, dt: number): boolean {
+        const material = p.color >>> 24;
+        const lava = material === MATERIAL_LAVA;
+        const terminal = lava ? LAVA_TERMINAL_FALL_CELLS_PER_S : MAX_FALL_SPEED_CELLS_PER_S * 0.8;
+        const hops = lava ? LAVA_FLOW_HOPS_PER_TICK : WATER_FLOW_HOPS_PER_TICK;
         p.vx += this.gravityX * dt * 0.8;
         p.vx *= Math.max(0, 1 - 0.8 * dt);
         this.moveHorizontally(p, dt, (pixel) => pixel !== 0);
 
-        p.vy = Math.min(p.vy + GRAVITY_CELLS_PER_S2 * dt, MAX_FALL_SPEED_CELLS_PER_S * 0.8);
+        p.vy = Math.min(p.vy + GRAVITY_CELLS_PER_S2 * dt, terminal);
         if (p.vy < 0) {
             this.moveUpwards(p, dt, (pixel) => pixel !== 0);
             return true;
@@ -661,7 +698,7 @@ export class SandEngine {
 
             const nextY = cy + 1;
             if (nextY >= this.rows) {
-                this.settleWater(p, cx, this.rows - 1);
+                this.settleLiquid(p, cx, this.rows - 1);
                 return false;
             }
             if (this.pixelAt(cx, nextY) === 0) {
@@ -691,26 +728,26 @@ export class SandEngine {
 
             const flowDir = this.findWaterDropDirection(cx, cy);
             if (flowDir === 0) {
-                this.settleWater(p, cx, cy);
+                this.settleLiquid(p, cx, cy);
                 return false;
             }
             let runCol = cx;
-            for (let hop = 0; hop < WATER_FLOW_HOPS_PER_TICK; hop++) {
+            for (let hop = 0; hop < hops; hop++) {
                 const next = runCol + flowDir;
                 if (!this.isFree(next, cy)) break;
                 runCol = next;
                 if (this.pixelAt(runCol, nextY) === 0) break;
             }
             if (runCol === cx) {
-                this.settleWater(p, cx, cy);
+                this.settleLiquid(p, cx, cy);
                 return false;
             }
             p.x = runCol + 0.5;
             p.vx = flowDir * 4;
             p.vy = Math.min(p.vy, 8);
             p.flow++;
-            if (p.flow > WATER_MAX_FLOW_HOPS) {
-                this.settleWater(p, runCol, cy);
+            if (p.flow > (lava ? LAVA_MAX_FLOW_HOPS : WATER_MAX_FLOW_HOPS)) {
+                this.settleLiquid(p, runCol, cy);
                 return false;
             }
             continue;
@@ -831,7 +868,7 @@ export class SandEngine {
         this.markDirtyAround(cellX);
     }
 
-    private settleWater(p: Particle, cellX: number, cellY: number): void {
+    private settleLiquid(p: Particle, cellX: number, cellY: number): void {
         let y = cellY;
         while (y >= 0 && this.pixelAt(cellX, y) !== 0) y--;
         if (y < 0) return;
@@ -839,8 +876,9 @@ export class SandEngine {
         // Hydrostatic leveling: never rest on top of other water while the
         // pool surface is lower somewhere reachable. Water cells don't block
         // the search (pressure equalizes through the pool); solids do.
-        if (y + 1 < this.rows && this.pixelAt(cellX, y + 1) >>> 24 === MATERIAL_WATER) {
-            const targetCol = this.findWaterEqualizeColumn(cellX, y);
+        const material = p.color >>> 24;
+        if (y + 1 < this.rows && this.pixelAt(cellX, y + 1) >>> 24 === material) {
+            const targetCol = this.findLiquidEqualizeColumn(cellX, y, material);
             if (targetCol !== cellX) {
                 let restY = y;
                 while (restY + 1 < this.rows && this.pixelAt(targetCol, restY + 1) === 0) restY++;
@@ -856,7 +894,7 @@ export class SandEngine {
 
     // Find the nearest column (along row cy) whose free surface is strictly
     // lower than cy, walking over water but stopping at solid walls.
-    private findWaterEqualizeColumn(cx: number, cy: number): number {
+    private findLiquidEqualizeColumn(cx: number, cy: number, liquid: number): number {
         if (cy + 1 >= this.rows) return cx;
         const preferred =
             Math.abs(this.gravityX) > 20 ? (this.gravityX > 0 ? 1 : -1) : Math.random() < 0.5 ? -1 : 1;
@@ -871,7 +909,7 @@ export class SandEngine {
                     continue;
                 }
                 const cell = this.pixelAt(col, cy);
-                if (cell !== 0 && cell >>> 24 !== MATERIAL_WATER) {
+                if (cell !== 0 && cell >>> 24 !== liquid) {
                     open[k] = false; // solid wall
                     continue;
                 }
@@ -911,7 +949,7 @@ export class SandEngine {
                     continue;
                 }
 
-                if (material === MATERIAL_WATER) {
+                if (isLiquid(material)) {
                     const leftFree =
                         col > 0 && this.pixels[idx - 1] === 0 && this.pixels[idx + this.cols - 1] === 0;
                     const rightFree =
@@ -931,7 +969,7 @@ export class SandEngine {
             // restored from old saves.
             const waterTop = this.waterSurfaceOf(col);
             if (waterTop !== -1) {
-                const targetCol = this.findWaterEqualizeColumn(col, waterTop);
+                const targetCol = this.findLiquidEqualizeColumn(col, waterTop, MATERIAL_WATER);
                 if (targetCol !== col) {
                     const color = this.pixels[waterTop * this.cols + col];
                     this.clearCell(col, waterTop);
@@ -1033,6 +1071,132 @@ export class SandEngine {
         }
         for (const col of newlyDirty) {
             if (col >= 0 && col < this.cols) this.dirtyColumns.add(col);
+        }
+    }
+
+    // Everything thermal, on a slow tick of its own.
+    //
+    // Lava does not flip to stone the moment it meets water — it holds a heat
+    // value that drains according to what surrounds it, and only sets once
+    // there is nothing left. Meanwhile that heat conducts on through sand and
+    // through the glass it has already made, which is what lets a flow bake
+    // successive layers rather than glazing a single skin and stopping.
+    private updateHeat(now: number): void {
+        if (this.cols === 0) return;
+        const cells = this.cols * this.rows;
+        if (this.heat.length !== cells) {
+            this.heat = new Uint8Array(cells);
+            this.heatPrevious = new Uint8Array(cells);
+        }
+        // Snapshot: conduction must read last tick's field, or heat would race
+        // across the whole flow in one pass instead of advancing a cell.
+        this.heatPrevious.set(this.heat);
+
+        const conductTo = (x: number, y: number, source: number): void => {
+            if (x < 0 || x >= this.cols || y < 0 || y >= this.rows) return;
+            const material = materialOf(this.pixels[y * this.cols + x]);
+            if (material !== MATERIAL_SAND && material !== MATERIAL_PACKED_SAND && material !== MATERIAL_GLASS) {
+                return;
+            }
+            const index = y * this.cols + x;
+            const passed = source - HEAT_CONDUCTION_LOSS;
+            if (passed > this.heat[index]) this.heat[index] = passed;
+        };
+
+        for (let y = 0; y < this.rows; y++) {
+            for (let x = 0; x < this.cols; x++) {
+                const index = y * this.cols + x;
+                const pixel = this.pixels[index];
+                const material = pixel === 0 ? 0 : pixel >>> 24;
+                const wasHot = this.heatPrevious[index];
+
+                if (material === MATERIAL_LAVA) {
+                    // Freshly poured lava arrives at full heat.
+                    let level = wasHot === 0 ? LAVA_HEAT_MAX : wasHot;
+
+                    let loss = LAVA_COOL_PER_TICK;
+                    const neighbours: Array<[number, number]> = [
+                        [x - 1, y],
+                        [x + 1, y],
+                        [x, y - 1],
+                        [x, y + 1]
+                    ];
+                    for (const [nx, ny] of neighbours) {
+                        if (nx < 0 || nx >= this.cols || ny < 0 || ny >= this.rows) continue;
+                        const near = materialOf(this.pixels[ny * this.cols + nx]);
+                        if (near === MATERIAL_WATER) {
+                            loss += LAVA_COOL_PER_WATER_NEIGHBOUR;
+                            if (Math.random() < WATER_BOIL_CHANCE_PER_TICK) {
+                                this.clearCell(nx, ny); // boiled off
+                                this.markDirtyAround(nx);
+                                this.spawnSteam(nx, ny, now);
+                            }
+                        } else if (near === 0) {
+                            loss += LAVA_COOL_PER_AIR_NEIGHBOUR;
+                        } else if (isFlora(near)) {
+                            this.clearCell(nx, ny); // scorched
+                            this.markDirtyAround(nx);
+                        }
+                    }
+
+                    level = Math.max(0, level - loss);
+                    this.heat[index] = level;
+                    if (level === 0) {
+                        this.setCell(x, y, this.cooledLavaColor());
+                        this.markDirtyAround(x);
+                        this.stoneDirty = true;
+                    } else {
+                        // Show the cooling: bright and yellow while molten,
+                        // sinking to a dull red before it sets.
+                        this.setCell(x, y, this.lavaColorForHeat(level));
+                    }
+                    for (const [nx, ny] of neighbours) conductTo(nx, ny, level);
+                    continue;
+                }
+
+                if (wasHot === 0) {
+                    if (this.heat[index] !== 0 && material === 0) this.heat[index] = 0;
+                    continue;
+                }
+
+                // Sand and glass pass heat along; anything else just loses it.
+                if (
+                    material === MATERIAL_SAND ||
+                    material === MATERIAL_PACKED_SAND ||
+                    material === MATERIAL_GLASS
+                ) {
+                    conductTo(x - 1, y, wasHot);
+                    conductTo(x + 1, y, wasHot);
+                    conductTo(x, y - 1, wasHot);
+                    conductTo(x, y + 1, wasHot);
+                    if (
+                        (material === MATERIAL_SAND || material === MATERIAL_PACKED_SAND) &&
+                        wasHot >= SAND_TO_GLASS_HEAT
+                    ) {
+                        this.setCell(x, y, this.glassColor());
+                    }
+                } else {
+                    this.heat[index] = 0;
+                    continue;
+                }
+
+                this.heat[index] = Math.max(0, this.heat[index] - HEAT_AMBIENT_COOL);
+            }
+        }
+    }
+
+    private spawnSteam(col: number, row: number, now: number): void {
+        for (let i = 0; i < LAVA_QUENCH_SPARKS; i++) {
+            if (this.sparks.length >= MAX_ACTIVE_PARTICLES) break;
+            this.sparks.push({
+                x: (col + 0.5) * CELL,
+                y: (row + 0.5) * CELL,
+                vx: (Math.random() - 0.5) * 70,
+                vy: -40 - Math.random() * 60,
+                bornAt: now,
+                lifeMs: 260 + Math.random() * 300,
+                hue: 30
+            });
         }
     }
 
@@ -1396,7 +1560,27 @@ export class SandEngine {
     };
 
     private updateLife(dt: number, now: number): void {
+        // Re-read the neighbourhood periodically rather than every frame: at
+        // these speeds nobody notices, and it keeps an O(n^2) scan cheap.
+        const steer = ++this.steerTick >= SWIMMER_STEER_EVERY_STEPS;
+        if (steer) this.steerTick = 0;
+
         for (let i = this.swimmers.length - 1; i >= 0; i--) {
+            if (steer) {
+                const urge = steerTowardNeighbours(this.swimmers[i], this.swimmers, {
+                    huntRangePx: SWIMMER_HUNT_RANGE_PX,
+                    fleeRangePx: SWIMMER_FLEE_RANGE_PX,
+                    schoolRangePx: SWIMMER_SCHOOL_RANGE_PX,
+                    urgency: SWIMMER_SCHOOL_URGENCY
+                });
+                if (urge) {
+                    this.swimmers[i].targetY = urge.targetY;
+                    this.swimmers[i].dir = urge.dir;
+                    // Hold the new heading rather than letting the idle
+                    // wander immediately re-aim somewhere else.
+                    this.swimmers[i].retargetAt = now + SWIMMER_RETARGET_MIN_MS;
+                }
+            }
             const alive = stepSwimmer(
                 this.swimmers[i],
                 dt,
@@ -1690,13 +1874,16 @@ export class SandEngine {
             case 'stone':
                 this.paintAlong(cssX, cssY, (x, y) => this.paintStoneAt(x, y));
                 break;
+            case 'lava':
+                this.spawnGrains(cssX, cssY, 'lava');
+                break;
             case 'erase':
                 this.paintAlong(cssX, cssY, (x, y) => this.eraseAt(x, y));
                 break;
         }
     }
 
-    private spawnGrains(cssX: number, cssY: number, kind: 'sand' | 'water'): void {
+    private spawnGrains(cssX: number, cssY: number, kind: 'sand' | 'water' | 'lava'): void {
         for (let i = 0; i < this.grainsPerDrop; i++) {
             if (this.particles.length >= MAX_ACTIVE_PARTICLES) break;
             const cellX = this.clampCol(Math.floor(cssX / CELL) + Math.round((Math.random() - 0.5) * 4));
@@ -1704,12 +1891,17 @@ export class SandEngine {
 
             // If the tap lands inside the pile, spawn from just above it.
             const blocked = (pixel: number): boolean =>
-                kind === 'water' ? pixel !== 0 : this.blocksSand(pixel);
+                kind === 'sand' ? this.blocksSand(pixel) : pixel !== 0;
             let tries = 4;
             while (tries-- > 0 && cellY > 0 && blocked(this.pixelAt(cellX, cellY))) cellY--;
             if (blocked(this.pixelAt(cellX, cellY))) continue;
 
-            const color = kind === 'water' ? this.waterColor() : this.pureSandColor();
+            const color =
+                kind === 'water'
+                    ? this.waterColor()
+                    : kind === 'lava'
+                      ? this.lavaColor()
+                      : this.pureSandColor();
             this.particles.push(this.makeParticle(cellX + 0.5, cellY + 0.5, (Math.random() - 0.5) * 3, 0, color));
         }
     }
@@ -1778,7 +1970,16 @@ export class SandEngine {
                 const pixel = this.pixels[y * this.cols + x];
                 if (pixel === 0) continue;
                 const material = pixel >>> 24;
-                if (material === MATERIAL_STONE) continue; // stone shrugs off blasts
+                if (material === MATERIAL_STONE) {
+                    // A small charge cannot touch rock; a heavy one cracks the
+                    // core of the blast out of it, and gravity does the rest to
+                    // whatever is left hanging.
+                    if (radiusCells < STONE_FRACTURE_MIN_RADIUS_CELLS) continue;
+                    if (dist > radiusCells * STONE_FRACTURE_RADIUS_RATIO) continue;
+                    this.clearCell(x, y);
+                    this.stoneDirty = true;
+                    continue;
+                }
                 if (isFlora(material)) {
                     // Flora vaporizes; a flying stalk would re-anchor mid-air.
                     this.clearCell(x, y);
@@ -1857,6 +2058,45 @@ export class SandEngine {
             WATER_SATURATION,
             WATER_LIGHTNESS + (Math.random() * 10 - 5),
             MATERIAL_WATER
+        );
+    }
+
+    private lavaColor(): number {
+        return hslToPackedColor(
+            LAVA_HUE + (Math.random() * 10 - 5),
+            LAVA_SATURATION,
+            LAVA_LIGHTNESS_MIN + Math.random() * (LAVA_LIGHTNESS_MAX - LAVA_LIGHTNESS_MIN),
+            MATERIAL_LAVA
+        );
+    }
+
+    // Molten colour for a given heat level: bright and yellowish while fully
+    // hot, sinking to a dull red as it nears setting. Recomputed every heat
+    // tick, so a cooling flow visibly darkens before it turns to basalt.
+    private lavaColorForHeat(level: number): number {
+        const t = Math.max(0, Math.min(level / LAVA_HEAT_MAX, 1));
+        const hue = 10 + t * 32 + (Math.random() * 4 - 2);
+        const lightness = 34 + t * 30 + (Math.random() * 4 - 2);
+        return hslToPackedColor(hue, LAVA_SATURATION, lightness, MATERIAL_LAVA);
+    }
+
+    // Basalt left behind where a flow cooled and set.
+    private cooledLavaColor(): number {
+        return hslToPackedColor(
+            COOLED_LAVA_HUE + (Math.random() * 8 - 4),
+            COOLED_LAVA_SATURATION,
+            COOLED_LAVA_LIGHTNESS_MIN +
+                Math.random() * (COOLED_LAVA_LIGHTNESS_MAX - COOLED_LAVA_LIGHTNESS_MIN),
+            MATERIAL_STONE
+        );
+    }
+
+    private glassColor(): number {
+        return hslToPackedColor(
+            GLASS_HUE + (Math.random() * 12 - 6),
+            GLASS_SATURATION,
+            GLASS_LIGHTNESS_MIN + Math.random() * (GLASS_LIGHTNESS_MAX - GLASS_LIGHTNESS_MIN),
+            MATERIAL_GLASS
         );
     }
 

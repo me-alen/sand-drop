@@ -1,13 +1,23 @@
 import React from 'react';
 
-import { TopBar } from './Hud';
+import { SpeciesLog, TopBar } from './Hud';
 import InstructionOverlay from './InstructionOverlay';
 import { gameAudio } from './audio';
 import { DEFAULT_GRAINS_PER_DROP, MAX_GRAINS_PER_DROP } from './constants';
 import { Brush, SandEngine } from './engine';
-import { clearGrid, loadGrid, loadSettings, saveGrid, saveSettings } from './storage';
+import type { CreatureKind } from './life';
+import {
+    clearGrid,
+    loadGrid,
+    loadSettings,
+    loadSightings,
+    saveGrid,
+    saveSettings,
+    saveSightings
+} from './storage';
 
 const AUTOSAVE_INTERVAL_MS = 20000;
+const SPECIES_POLL_MS = 1500;
 
 const tiltSupported = (): boolean =>
     'DeviceOrientationEvent' in window && navigator.maxTouchPoints > 0;
@@ -26,6 +36,11 @@ const Canvas = (): React.JSX.Element => {
     const [brush, setBrush] = React.useState<Brush>('sand');
     const [tiltEnabled, setTiltEnabled] = React.useState(false);
     const pointerActiveRef = React.useRef(false);
+    const [logOpen, setLogOpen] = React.useState(false);
+    const [present, setPresent] = React.useState<Set<CreatureKind>>(new Set());
+    const [sighted, setSighted] = React.useState<Set<CreatureKind>>(
+        () => new Set(loadSightings() as CreatureKind[])
+    );
 
     React.useEffect(() => {
         const canvas = canvasRef.current;
@@ -34,7 +49,6 @@ const Canvas = (): React.JSX.Element => {
         if (!engine) return;
 
         engineRef.current = engine;
-        (window as unknown as { __sandEngine: SandEngine }).__sandEngine = engine; // TEMP
         const saved = loadGrid();
         if (saved) engine.restore(saved);
         engine.start();
@@ -53,6 +67,26 @@ const Canvas = (): React.JSX.Element => {
             engine.dispose();
             engineRef.current = null;
         };
+    }, []);
+
+    // Watch which species the ocean is currently supporting, and remember
+    // every one that has ever turned up.
+    React.useEffect(() => {
+        const poll = window.setInterval(() => {
+            const engine = engineRef.current;
+            if (!engine) return;
+            const here = engine.presentSpecies();
+            setPresent(new Set(here));
+            if (here.length === 0) return;
+            setSighted((current) => {
+                const next = new Set(current);
+                for (const kind of here) next.add(kind);
+                if (next.size === current.size) return current;
+                saveSightings(Array.from(next));
+                return next;
+            });
+        }, SPECIES_POLL_MS);
+        return () => window.clearInterval(poll);
     }, []);
 
     React.useEffect(() => {
@@ -209,6 +243,12 @@ const Canvas = (): React.JSX.Element => {
                 }}
                 onShare={() => void handleShare()}
                 onReset={handleReset}
+            />
+            <SpeciesLog
+                open={logOpen}
+                onToggle={() => setLogOpen((current) => !current)}
+                sighted={sighted}
+                present={present}
             />
             {!hasStartedDropping && <InstructionOverlay />}
         </div>

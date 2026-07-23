@@ -158,6 +158,10 @@ body {
     background: hsl(205, 82%, 52%);
 }
 
+.material-swatch--lava {
+    background: linear-gradient(180deg, #ffd166 0%, #f4761f 55%, #c62f12 100%);
+}
+
 .material-swatch--stone {
     background: hsl(222, 8%, 42%);
 }
@@ -182,6 +186,54 @@ body {
     min-width: 3.4rem;
     text-align: center;
     font-variant-numeric: tabular-nums;
+}
+
+.species-log {
+    position: absolute;
+    left: 1rem;
+    bottom: 1rem;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+}
+
+.species-log__toggle {
+    font-variant-numeric: tabular-nums;
+}
+
+.species-log__list {
+    margin: 0;
+    padding: 0.5rem 0.6rem;
+    list-style: none;
+    min-width: 13rem;
+    max-height: 55vh;
+    overflow-y: auto;
+    color: #e8ecff;
+    font-size: 0.8rem;
+    background: rgba(10, 12, 24, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 0.7rem;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.species-log__row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.2rem 0;
+}
+
+.species-log__row--unseen {
+    opacity: 0.45;
+}
+
+.species-log__note {
+    font-size: 0.72rem;
+    opacity: 0.7;
 }
 
 .instruction-overlay {

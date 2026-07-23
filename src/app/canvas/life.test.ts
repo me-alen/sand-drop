@@ -18,6 +18,7 @@ import {
     spriteWidth,
     SQUID_SPRITE,
     STARFISH_SPRITE,
+    steerTowardNeighbours,
     stepCrawler,
     stepSwimmer,
     Swimmer,
@@ -254,6 +255,67 @@ describe('stepSwimmer', () => {
         stepSwimmer(swimmer, 1, 0, isWater, never, tuning());
         expect(swimmer.y).toBe(100);
         expect(swimmer.targetY).toBe(100); // gave up on the unreachable depth
+    });
+});
+
+describe('steering', () => {
+    const steering = {
+        huntRangePx: 200,
+        fleeRangePx: 120,
+        schoolRangePx: 90,
+        urgency: 0.5
+    };
+    const at = (kind: Swimmer['kind'], x: number, y: number): Swimmer =>
+        makeSwimmer({ kind, x, y });
+
+    it('sends a shark after the nearest fish', () => {
+        const shark = at('shark', 100, 100);
+        const near = at('fish', 220, 160);
+        const far = at('fish', 900, 900);
+        const urge = steerTowardNeighbours(shark, [shark, near, far], steering);
+        expect(urge).not.toBeNull();
+        expect(urge!.dir).toBe(1); // the fish is to its right
+        expect(urge!.targetY).toBe(160); // dives to the fish's depth
+    });
+
+    it('scatters a fish away from a nearby shark', () => {
+        const fish = at('fish', 100, 100);
+        const shark = at('shark', 160, 130);
+        const urge = steerTowardNeighbours(fish, [fish, shark], steering);
+        expect(urge).not.toBeNull();
+        expect(urge!.dir).toBe(-1); // shark on the right, so it bolts left
+        expect(urge!.targetY).toBeLessThan(100); // and away from its depth
+    });
+
+    it('puts fleeing ahead of schooling', () => {
+        const fish = at('fish', 100, 100);
+        const shark = at('shark', 150, 100);
+        const friends = [at('fish', 140, 100), at('fish', 145, 105)];
+        const urge = steerTowardNeighbours(fish, [fish, shark, ...friends], steering);
+        // Its friends are toward the shark; survival wins.
+        expect(urge!.dir).toBe(-1);
+    });
+
+    it('draws a lone fish toward the company of its neighbours', () => {
+        const fish = at('fish', 100, 100);
+        const friends = [at('fish', 150, 160), at('fish', 160, 160)];
+        const urge = steerTowardNeighbours(fish, [fish, ...friends], steering);
+        expect(urge).not.toBeNull();
+        expect(urge!.dir).toBe(1);
+        expect(urge!.targetY).toBeGreaterThan(100); // eases toward them
+        expect(urge!.targetY).toBeLessThan(160); // without teleporting
+    });
+
+    it('leaves a swimmer alone when nothing is near', () => {
+        const fish = at('fish', 100, 100);
+        const distant = at('fish', 2000, 2000);
+        expect(steerTowardNeighbours(fish, [fish, distant], steering)).toBeNull();
+    });
+
+    it('does not make whales or turtles chase anything', () => {
+        const whale = at('whale', 100, 100);
+        const fish = at('fish', 130, 110);
+        expect(steerTowardNeighbours(whale, [whale, fish], steering)).toBeNull();
     });
 });
 
